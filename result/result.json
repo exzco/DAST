@@ -1,0 +1,524 @@
+{
+  "taskId": "t002",
+  "type": "port_scan",
+  "timestamp": "2026-06-18T11:45:29+08:00",
+  "data": {
+    "ip": "127.0.0.1",
+    "ports": [
+      53,
+      135,
+      445,
+      3306,
+      4001,
+      4343,
+      4449,
+      8088
+    ]
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "fingerprint",
+  "timestamp": "2026-06-18T11:45:29+08:00",
+  "data": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "proto": "tcp",
+    "tags": [
+      "mysql",
+      "database"
+    ]
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "poc_scan",
+  "timestamp": "2026-06-18T11:45:30+08:00",
+  "data": {
+    "target": "127.0.0.1:3306",
+    "tags": [
+      "mysql",
+      "database"
+    ],
+    "findings": 0
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "fingerprint",
+  "timestamp": "2026-06-18T11:45:31+08:00",
+  "data": {
+    "host": "127.0.0.1",
+    "port": 53,
+    "proto": "tcp",
+    "tags": [
+      "tcpwrapped"
+    ]
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "poc_scan",
+  "timestamp": "2026-06-18T11:45:31+08:00",
+  "data": {
+    "target": "127.0.0.1:53",
+    "tags": [
+      "tcpwrapped"
+    ],
+    "findings": 0
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "fingerprint",
+  "timestamp": "2026-06-18T11:45:35+08:00",
+  "data": {
+    "host": "127.0.0.1",
+    "port": 135,
+    "proto": "tcp",
+    "tags": [
+      "microsoft-windows-rpc",
+      "msrpc"
+    ]
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "fingerprint",
+  "timestamp": "2026-06-18T11:45:35+08:00",
+  "data": {
+    "host": "127.0.0.1",
+    "port": 445,
+    "proto": "tcp",
+    "tags": [
+      "microsoft-ds",
+      "smb",
+      "windows"
+    ]
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "poc_scan",
+  "timestamp": "2026-06-18T11:45:35+08:00",
+  "data": {
+    "target": "127.0.0.1:135",
+    "tags": [
+      "microsoft-windows-rpc",
+      "msrpc"
+    ],
+    "findings": 0
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "poc_scan",
+  "timestamp": "2026-06-18T11:45:35+08:00",
+  "data": {
+    "target": "127.0.0.1:445",
+    "tags": [
+      "microsoft-ds",
+      "smb",
+      "windows"
+    ],
+    "findings": 0
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "fingerprint",
+  "timestamp": "2026-06-18T11:45:41+08:00",
+  "data": {
+    "host": "127.0.0.1",
+    "port": 8088,
+    "proto": "http",
+    "tags": [
+      "http",
+      "nginx",
+      "web"
+    ]
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "poc_scan",
+  "timestamp": "2026-06-18T11:45:41+08:00",
+  "data": {
+    "target": "http://127.0.0.1:8088",
+    "tags": [
+      "http",
+      "nginx",
+      "web"
+    ],
+    "findings": 0
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "fingerprint",
+  "timestamp": "2026-06-18T11:45:59+08:00",
+  "data": {
+    "host": "127.0.0.1",
+    "port": 4001,
+    "proto": "tcp",
+    "tags": [
+      "exposure",
+      "misconfig",
+      "config"
+    ],
+    "response": "nmap probe timed out: [nmap-probe] run failed on 127.0.0.1:4001: nmap scan timed out"
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "poc_scan",
+  "timestamp": "2026-06-18T11:45:59+08:00",
+  "data": {
+    "target": "127.0.0.1:4001",
+    "tags": [
+      "exposure",
+      "misconfig",
+      "config"
+    ],
+    "findings": 0
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "fingerprint",
+  "timestamp": "2026-06-18T11:45:59+08:00",
+  "data": {
+    "host": "127.0.0.1",
+    "port": 4343,
+    "proto": "tcp",
+    "tags": [
+      "exposure",
+      "misconfig",
+      "config"
+    ],
+    "response": "nmap probe timed out: [nmap-probe] run failed on 127.0.0.1:4343: nmap scan timed out"
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "poc_scan",
+  "timestamp": "2026-06-18T11:45:59+08:00",
+  "data": {
+    "target": "127.0.0.1:4343",
+    "tags": [
+      "exposure",
+      "misconfig",
+      "config"
+    ],
+    "findings": 0
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "fingerprint",
+  "timestamp": "2026-06-18T11:46:01+08:00",
+  "data": {
+    "host": "127.0.0.1",
+    "port": 4449,
+    "proto": "tcp",
+    "tags": [
+      "exposure",
+      "misconfig",
+      "config"
+    ],
+    "response": "nmap probe timed out: [nmap-probe] run failed on 127.0.0.1:4449: nmap scan timed out"
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "poc_scan",
+  "timestamp": "2026-06-18T11:46:01+08:00",
+  "data": {
+    "target": "127.0.0.1:4449",
+    "tags": [
+      "exposure",
+      "misconfig",
+      "config"
+    ],
+    "findings": 0
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "port_scan",
+  "timestamp": "2026-06-18T11:54:56+08:00",
+  "data": {
+    "ip": "127.0.0.1",
+    "ports": [
+      53,
+      135,
+      445,
+      3306,
+      4001,
+      4343,
+      4449,
+      8088
+    ]
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "fingerprint",
+  "timestamp": "2026-06-18T11:54:56+08:00",
+  "data": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "proto": "tcp",
+    "tags": [
+      "mysql",
+      "database"
+    ]
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "poc_scan",
+  "timestamp": "2026-06-18T11:54:56+08:00",
+  "data": {
+    "target": "127.0.0.1:3306",
+    "tags": [
+      "mysql",
+      "database"
+    ],
+    "findings": 0
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "fingerprint",
+  "timestamp": "2026-06-18T11:54:58+08:00",
+  "data": {
+    "host": "127.0.0.1",
+    "port": 53,
+    "proto": "tcp",
+    "tags": [
+      "tcpwrapped"
+    ]
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "poc_scan",
+  "timestamp": "2026-06-18T11:54:58+08:00",
+  "data": {
+    "target": "127.0.0.1:53",
+    "tags": [
+      "tcpwrapped"
+    ],
+    "findings": 0
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "fingerprint",
+  "timestamp": "2026-06-18T11:55:02+08:00",
+  "data": {
+    "host": "127.0.0.1",
+    "port": 135,
+    "proto": "tcp",
+    "tags": [
+      "msrpc",
+      "microsoft-windows-rpc"
+    ]
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "fingerprint",
+  "timestamp": "2026-06-18T11:55:02+08:00",
+  "data": {
+    "host": "127.0.0.1",
+    "port": 445,
+    "proto": "tcp",
+    "tags": [
+      "microsoft-ds",
+      "smb",
+      "windows"
+    ]
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "poc_scan",
+  "timestamp": "2026-06-18T11:55:02+08:00",
+  "data": {
+    "target": "127.0.0.1:135",
+    "tags": [
+      "msrpc",
+      "microsoft-windows-rpc"
+    ],
+    "findings": 0
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "poc_scan",
+  "timestamp": "2026-06-18T11:55:02+08:00",
+  "data": {
+    "target": "127.0.0.1:445",
+    "tags": [
+      "microsoft-ds",
+      "smb",
+      "windows"
+    ],
+    "findings": 0
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "fingerprint",
+  "timestamp": "2026-06-18T11:55:08+08:00",
+  "data": {
+    "host": "127.0.0.1",
+    "port": 8088,
+    "proto": "http",
+    "tags": [
+      "nginx",
+      "web",
+      "http"
+    ]
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "poc_scan",
+  "timestamp": "2026-06-18T11:55:08+08:00",
+  "data": {
+    "target": "http://127.0.0.1:8088",
+    "tags": [
+      "nginx",
+      "web",
+      "http"
+    ],
+    "findings": 0
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "fingerprint",
+  "timestamp": "2026-06-18T11:55:22+08:00",
+  "data": {
+    "host": "127.0.0.1",
+    "port": 4001,
+    "proto": "tcp",
+    "tags": [
+      "exposure",
+      "misconfig",
+      "config"
+    ],
+    "response": "nmap probe timed out: [nmap-probe] run failed on 127.0.0.1:4001: nmap scan timed out"
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "poc_scan",
+  "timestamp": "2026-06-18T11:55:22+08:00",
+  "data": {
+    "target": "127.0.0.1:4001",
+    "tags": [
+      "exposure",
+      "misconfig",
+      "config"
+    ],
+    "findings": 0
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "fingerprint",
+  "timestamp": "2026-06-18T11:55:22+08:00",
+  "data": {
+    "host": "127.0.0.1",
+    "port": 4343,
+    "proto": "tcp",
+    "tags": [
+      "exposure",
+      "misconfig",
+      "config"
+    ],
+    "response": "nmap probe timed out: [nmap-probe] run failed on 127.0.0.1:4343: nmap scan timed out"
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "poc_scan",
+  "timestamp": "2026-06-18T11:55:22+08:00",
+  "data": {
+    "target": "127.0.0.1:4343",
+    "tags": [
+      "exposure",
+      "misconfig",
+      "config"
+    ],
+    "findings": 0
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "fingerprint",
+  "timestamp": "2026-06-18T11:55:24+08:00",
+  "data": {
+    "host": "127.0.0.1",
+    "port": 4449,
+    "proto": "tcp",
+    "tags": [
+      "exposure",
+      "misconfig",
+      "config"
+    ],
+    "response": "nmap probe timed out: [nmap-probe] run failed on 127.0.0.1:4449: nmap scan timed out"
+  }
+}
+
+{
+  "taskId": "t002",
+  "type": "poc_scan",
+  "timestamp": "2026-06-18T11:55:24+08:00",
+  "data": {
+    "target": "127.0.0.1:4449",
+    "tags": [
+      "exposure",
+      "misconfig",
+      "config"
+    ],
+    "findings": 0
+  }
+}
+
