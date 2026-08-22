@@ -221,10 +221,17 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 	// 针对各主机的开放端口，先尝试 Nmap 服务探测
 	nmapServicesByHost := make(map[string]map[int]model.Service)
 	for host, ports := range hostOpenPorts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		emit(3, "服务识别", fmt.Sprintf("🔍 正在调用 Nmap 探测 Binary 服务版本: %s (端口: %v)...", host, ports))
 		nmapServicesByHost[host] = r.nmapScanner.DetectServices(ctx, host, ports)
 	}
 
 	for _, obs := range openObs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if obs.Status != model.PortStatusOpen {
 			continue
 		}
@@ -386,10 +393,10 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 	})
 	for _, f := range allFacts {
 		if f.Subject != "" {
-			emit(3, "服务识别与暴露面", fmt.Sprintf("   - 资产事实: %s:%s (来源: %s)", f.Subject, f.Value, f.Source))
+			emit(3, "服务识别", fmt.Sprintf("   - 资产事实: %s:%s (来源: %s)", f.Subject, f.Value, f.Source))
 		}
 	}
-	emit(3, "服务识别与暴露面", fmt.Sprintf("✅ 阶段 3/5 完成: 已识别服务 %d 个, 发现 Web 端点 %d 个 (耗时: %s)", len(allServices), len(allEndpoints), time.Since(stage3Start)))
+	emit(3, "服务识别", fmt.Sprintf("✅ 阶段 3/5 完成: 已识别服务 %d 个, 发现 Web 端点 %d 个 (耗时: %s)", len(allServices), len(allEndpoints), time.Since(stage3Start)))
 
 	// 4. nuclei POC 验证
 	stage4Start := time.Now()

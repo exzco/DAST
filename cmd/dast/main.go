@@ -94,7 +94,7 @@ func runScan(args []string) {
 	portsFlag := fs.String("ports", "", "指定端口范围 (如 80,443,8000-8080，留空默认使用 profile 策略)")
 	profileFlag := fs.String("profile", "fast", "扫描预设 fast, balanced, deep")
 	outFlag := fs.String("output", "result/scan_report.json", "JSON 审计结果保存路径")
-	mdFlag := fs.String("md", "", "Markdown 报告保存路径")
+	mdFlag := fs.String("md", "result/report.md", "Markdown 报告保存路径")
 	pocDirFlag := fs.String("poc-dir", "./poc", "Nuclei POC 模板目录路径")
 	_ = fs.Parse(args)
 
@@ -120,8 +120,9 @@ func runScan(args []string) {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		fmt.Println("\n⚠️ 接收到中断信号，正在退出进程...")
+		fmt.Println("\n⚠️ 接收到中断信号，已终止扫描并立即退出。")
 		cancel()
+		os.Exit(0)
 	}()
 
 	cfg := config.Load()

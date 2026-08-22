@@ -263,11 +263,15 @@ func (s *NmapServiceScanner) DetectServices(ctx context.Context, host string, po
 	}
 	portRange := strings.Join(portStrs, ",")
 
+	nmapCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
 	scanner, err := nmap.NewScanner(
-		ctx,
+		nmapCtx,
 		nmap.WithTargets(host),
 		nmap.WithPorts(portRange),
-		nmap.WithServiceInfo(), 
+		nmap.WithServiceInfo(),
+		nmap.WithVersionIntensity(2),
 		nmap.WithSkipHostDiscovery(),
 		nmap.WithDisabledDNSResolution(),
 	)

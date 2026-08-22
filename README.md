@@ -4,6 +4,10 @@
 
 ---
 
+## 0. 注意
+
+注意代理软件 tun 模式 , fakeip 模式下对端口探活会有一定的影响
+
 ## 1. 环境准备与依赖安装
 
 ### ① 安装 Go 环境
@@ -248,3 +252,6 @@ redis-cli PUBLISH dast:control "STOP 550e8400-e29b-41d4-a716-446655440000"
 # 8. 清理测试任务流缓存
 redis-cli DEL dast.command.raw dast.command.network
 ```
+
+
+
