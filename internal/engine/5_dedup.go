@@ -16,10 +16,6 @@ var (
 	ErrDurationBudgetExceeded = errors.New("duration budget exceeded")
 )
 
-// ============================================================================
-// 1. Result Aggregator & Deduplication
-// ============================================================================
-
 type Aggregator struct {
 	mu           sync.Mutex
 	findings     map[string]model.Finding

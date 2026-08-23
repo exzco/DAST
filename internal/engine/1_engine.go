@@ -33,7 +33,7 @@ type ProbeAdapter interface {
 }
 
 type CheckExecutor interface {
-	ExecuteCheck(ctx context.Context, spec model.CheckSpec, targetCtx CheckContext) ([]model.Finding, error)
+	ExecuteChecks(ctx context.Context, specs []model.CheckSpec, targetCtx CheckContext) ([]model.Finding, error)
 }
 
 type ProgressEvent struct {
@@ -281,6 +281,14 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 			}
 		}
 
+		if svc.Protocol != "http" && svc.Protocol != "https" {
+			testURL := fmt.Sprintf("http://%s:%d/", svc.Host, svc.Port)
+			if resp, err := r.httpClient.Do(ctx, "GET", testURL, nil, ""); err == nil && resp != nil {
+				svc.Protocol = "http"
+				svc.Confidence = model.ConfidenceFirm
+			}
+		}
+
 		allServices = append(allServices, svc)
 
 		// 记录 Banner/Nmap 提取数据
@@ -312,14 +320,6 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 		}
 
 		// 4. Web 服务识别：Wappalyzer +  FingerprintEngine 自定义规则
-		if svc.Protocol == "unknown" {
-			testURL := fmt.Sprintf("http://%s:%d/", svc.Host, svc.Port)
-			if resp, err := r.httpClient.Do(ctx, "GET", testURL, nil, ""); err == nil && resp != nil {
-				svc.Protocol = "http"
-				svc.Confidence = model.ConfidenceFirm
-			}
-		}
-
 		if svc.Protocol == "http" || svc.Protocol == "https" {
 			baseURL := fmt.Sprintf("%s://%s:%d", svc.Protocol, svc.Host, svc.Port)
 			resp, err := r.httpClient.Do(ctx, "GET", baseURL, nil, "")
@@ -400,56 +400,62 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 
 	// 4. nuclei POC 验证
 	stage4Start := time.Now()
-	selectedChecks := r.ruleIndex.SelectChecks(allFacts, pol)
-	emit(4, "POC 验证", fmt.Sprintf("📋 倒排索引规则规划完成: 精准匹配并就绪 %d 项漏洞检查", len(selectedChecks)))
+	baseChecks := r.ruleIndex.SelectChecks(allFacts, pol)
+	emit(4, "POC 验证", fmt.Sprintf("📋 倒排索引规则规划完成: 按资产事实匹配 %d 项漏洞检查", len(baseChecks)))
 
-	for _, check := range selectedChecks {
-		for _, svc := range allServices {
-			targetURL := fmt.Sprintf("%s://%s:%d", svc.Protocol, svc.Host, svc.Port)
-			if svc.Protocol == "unknown" {
-				targetURL = fmt.Sprintf("%s:%d", svc.Host, svc.Port)
+	// 仅对 web 服务使用 nuclei 
+	for _, svc := range allServices {
+		if svc.Protocol != "http" && svc.Protocol != "https" {
+			continue
+		}
+
+		checks := baseChecks
+		for _, spec := range r.ruleIndex.SelectByProtocol(svc.Protocol, pol) {
+			duplicated := false
+			for _, c := range checks {
+				if c.ID == spec.ID {
+					duplicated = true
+					break
+				}
 			}
-
-			targetCtx := CheckContext{
-				ScanRunID:   scanRunID,
-				TargetURL:   targetURL,
-				ServiceHost: svc.Host,
-				ServicePort: svc.Port,
-				Protocol:    svc.Protocol,
-				Facts:       allFacts,
-				Policy:      pol,
+			if !duplicated {
+				checks = append(checks, spec)
 			}
+		}
+		if len(checks) == 0 {
+			continue
+		}
 
-			emit(4, "POC 验证", fmt.Sprintf("🛡️ 正在执行漏洞检查 [%s] -> %s...", check.ID, targetURL))
-			findings, err := r.checkExecutor.ExecuteCheck(ctx, check, targetCtx)
-			if err != nil {
-				emit(4, "POC 验证", fmt.Sprintf("⚠️ 检查执行告警 [%s]: %v", check.ID, err))
-				continue
-			}
+		targetURL := fmt.Sprintf("%s://%s:%d", svc.Protocol, svc.Host, svc.Port)
+		targetCtx := CheckContext{
+			ScanRunID:   scanRunID,
+			TargetURL:   targetURL,
+			ServiceHost: svc.Host,
+			ServicePort: svc.Port,
+			Protocol:    svc.Protocol,
+			Facts:       allFacts,
+			Policy:      pol,
+		}
 
-			for _, f := range findings {
-				f.StableKey = model.GenerateStableFindingKey(
-					pol.TenantID,
-					svc.Host,
-					targetURL,
-					check.ID,
-					"",
-					"",
-				)
+		emit(4, "POC 验证", fmt.Sprintf("🛡️ 正在对 %s 聚合执行 %d 项漏洞检查...", targetURL, len(checks)))
+		findings, err := r.checkExecutor.ExecuteChecks(ctx, checks, targetCtx)
+		if err != nil {
+			emit(4, "POC 验证", fmt.Sprintf("⚠️ 检查执行告警 [%s]: %v", targetURL, err))
+			continue
+		}
 
-				aggregator.IngestFinding(f)
-				emit(4, "POC 验证", fmt.Sprintf("🚨 发现并确证漏洞: [%s] %s (严重度: %s, 目标: %s)", f.CheckID, f.Title, f.Severity, f.MatchedAt), func(e *ProgressEvent) {
-					e.FindingName = f.Title
-					e.Severity = string(f.Severity)
-				})
-			}
+		for _, f := range findings {
+			aggregator.IngestFinding(f)
+			emit(4, "POC 验证", fmt.Sprintf("🚨 发现并确证漏洞: [%s] %s (严重度: %s, 目标: %s)", f.CheckID, f.Title, f.Severity, f.MatchedAt), func(e *ProgressEvent) {
+				e.FindingName = f.Title
+				e.Severity = string(f.Severity)
+			})
 		}
 	}
 	emit(4, "POC 验证", fmt.Sprintf("✅ 阶段 4/5 完成: 累计确证漏洞 %d 个 (耗时: %s)", len(aggregator.GetUniqueFindings()), time.Since(stage4Start)))
 
 
 	// 5. 去重报告输出
-
 	stage5Start := time.Now()
 	uniqueFindings := aggregator.GetUniqueFindings()
 	finalStats := aggregator.Stats()
@@ -458,6 +464,7 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 	finalStats.ServicesFound = len(allServices)
 	finalStats.EndpointsFound = len(allEndpoints)
 	finalStats.FindingsCount = len(uniqueFindings)
+	finalStats.DurationMs = time.Since(start).Milliseconds()
 
 	emit(5, "去重报告输出", fmt.Sprintf("📊 正在执行资产维度去重与汇聚... 总耗时: %s", time.Since(start)))
 	emit(5, "去重报告输出", fmt.Sprintf("✅ 阶段 5/5 完成 (耗时: %s)", time.Since(stage5Start)))

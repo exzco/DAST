@@ -15,6 +15,9 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// 扫描完成日志前缀，供集群监控/benchmark 统计
+const scanDoneLog = "[scan-done]"
+
 const (
 	DefaultRawStream    = "dast.command.raw"
 	DefaultTargetStream = "dast.command.network"
@@ -182,11 +185,22 @@ func (w *WorkerRuntime) runScanLoop(ctx context.Context) {
 			var input StageInput
 			if err := json.Unmarshal(env.Payload, &input); err == nil {
 				// Execute 5-stage scanning in-process on this worker node
-				_, _ = w.runner.Run(ctx, engine.ScanOptions{
+				res, runErr := w.runner.Run(ctx, engine.ScanOptions{
 					Targets:      []string{input.Target},
 					PortOverride: input.PortRange,
 					Profile:      "fast",
 				})
+				if runErr != nil {
+					fmt.Printf("[worker %s] 扫描失败 %s: %v\n", w.consumerID, input.Target, runErr)
+				} else if res != nil {
+					// 上报统计到中心结果池，供控制端聚合与实时进度追踪
+					if err := w.client.WriteScanResult(ctx, input.ScanRunID, input.Target, res.Stats); err != nil {
+						fmt.Printf("[worker %s] 上报结果失败 %s: %v\n", w.consumerID, input.Target, err)
+					}
+					fmt.Printf("%s worker=%s run=%s target=%s findings=%d ports=%d services=%d duration_ms=%d\n",
+						scanDoneLog, w.consumerID, input.ScanRunID, input.Target,
+						res.Stats.FindingsCount, res.Stats.OpenPorts, res.Stats.ServicesFound, res.Stats.DurationMs)
+				}
 			}
 
 			_ = w.client.Ack(ctx, w.targetStream, w.group, msg.ID)

@@ -12,3 +12,4 @@ docs/
 .gitignore
 .claude.json
 todo.md
+benchmark/
