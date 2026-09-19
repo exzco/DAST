@@ -65,7 +65,6 @@ const (
 
 type Finding struct {
 	ID           string       `json:"id"`
-	TenantID     string       `json:"tenant_id"`
 	ScanRunID    string       `json:"scan_run_id"`
 	StableKey    string       `json:"stable_key"`
 	Title        string       `json:"title"`
@@ -86,10 +85,9 @@ type Finding struct {
 	LastSeen     time.Time    `json:"last_seen"`
 }
 
-// 生成相应的 hash key 对每个资产
-func GenerateStableFindingKey(tenantID, canonicalAsset, canonicalEndpoint, checkID, parameter, variant string) string {
-	raw := fmt.Sprintf("%s|%s|%s|%s|%s|%s",
-		strings.ToLower(tenantID),
+// 生成 hash key 用以去重
+func GenerateStableFindingKey(canonicalAsset, canonicalEndpoint, checkID, parameter, variant string) string {
+	raw := fmt.Sprintf("%s|%s|%s|%s|%s",
 		strings.ToLower(canonicalAsset),
 		strings.ToLower(canonicalEndpoint),
 		strings.ToLower(checkID),

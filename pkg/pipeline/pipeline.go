@@ -1,6 +1,9 @@
-package engine
+package pipeline
 
 import (
+	"distributed-scanner/internal/domain/poc"
+	"distributed-scanner/internal/domain/dedup"
+	"distributed-scanner/internal/domain/fingerprint"
 	"context"
 	"fmt"
 	"net"
@@ -10,30 +13,16 @@ import (
 	"distributed-scanner/internal/model"
 )
 
-type ProbeRequest struct {
-	Host       string               `json:"host"`
-	Port       int                  `json:"port,omitempty"`
-	Transport  string               `json:"transport"`
-	PortRange  string               `json:"port_range,omitempty"`
-	ScanPolicy model.PortScanPolicy `json:"scan_policy"`
-}
 
-type CheckContext struct {
-	ScanRunID   string        `json:"scan_run_id"`
-	TargetURL   string        `json:"target_url"`
-	ServiceHost string        `json:"service_host"`
-	ServicePort int           `json:"service_port"`
-	Protocol    string        `json:"protocol"`
-	Facts       []model.Fact  `json:"facts"`
-	Policy      *model.Policy `json:"policy"`
-}
+
+
 
 type ProbeAdapter interface {
-	ScanPorts(ctx context.Context, req ProbeRequest) ([]model.PortObservation, error)
+	ScanPorts(ctx context.Context, req model.ProbeRequest) ([]model.PortObservation, error)
 }
 
 type CheckExecutor interface {
-	ExecuteChecks(ctx context.Context, specs []model.CheckSpec, targetCtx CheckContext) ([]model.Finding, error)
+	ExecuteChecks(ctx context.Context, specs []model.CheckSpec, targetCtx model.CheckContext) ([]model.Finding, error)
 }
 
 type ProgressEvent struct {
@@ -78,40 +67,40 @@ type ScanResult struct {
 type Runner struct {
 	probeAdapter  ProbeAdapter
 	checkExecutor CheckExecutor
-	httpClient    *HTTPClient
-	tlsAnalyzer   *TLSAnalyzer
-	ruleIndex     *RuleIndex
-	fpEngine      *FingerprintEngine
-	nmapScanner   *NmapServiceScanner
+	httpClient    *fingerprint.HTTPClient
+	tlsAnalyzer   *fingerprint.TLSAnalyzer
+	ruleIndex     *poc.RuleIndex
+	fpEngine      *fingerprint.FingerprintEngine
+	nmapScanner   *fingerprint.NmapServiceScanner
 }
 
 func NewRunner(probe ProbeAdapter, check CheckExecutor, pocDir string) *Runner {
-	idx := NewRuleIndex()
-	httpClient := NewHTTPClient(10 * time.Second)
+	idx := poc.NewRuleIndex(pocDir, poc.DefaultPOCIndexFile)
+	httpClient := fingerprint.NewHTTPClient(10 * time.Second)
 	return &Runner{
 		probeAdapter:  probe,
 		checkExecutor: check,
 		httpClient:    httpClient,
-		tlsAnalyzer:   NewTLSAnalyzer(5 * time.Second),
+		tlsAnalyzer:   fingerprint.NewTLSAnalyzer(5 * time.Second),
 		ruleIndex:     idx,
-		fpEngine:      NewFingerprintEngine("data/fingerprints.json"),
-		nmapScanner:   NewNmapServiceScanner(),
+		fpEngine:      fingerprint.NewFingerprintEngine("data/fingerprints.json"),
+		nmapScanner:   fingerprint.NewNmapServiceScanner(),
 	}
 }
 
-// 总函数 ，流水线运行 ，目标解析，端口探活，服务识别，poc验证，去重统计。
+// 总函数 ，目标解析，端口探活，服务识别，poc验证，去重统计。
 func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 	start := time.Now()
 	scanRunID := model.NewUUID()
 
 	pol := opts.Policy
 	if pol == nil {
-		pol = model.DefaultPolicy("local-user")
+		pol = model.DefaultPolicy()
 	}
 
-	rateLimiter := NewRateLimiter(pol.RateLimit.MaxRPS, pol.RateLimit.MaxConcurrentScan)
-	budgetTracker := NewBudgetTracker(pol.Budget)
-	aggregator := NewAggregator()
+	rateLimiter := dedup.NewRateLimiter(pol.RateLimit.MaxRPS, pol.RateLimit.MaxConcurrentScan)
+	budgetTracker := dedup.NewBudgetTracker(pol.Budget)
+	aggregator := dedup.NewAggregator()
 
 	var normalizedTargets []model.NormalizedTarget
 	var allFacts []model.Fact
@@ -140,23 +129,23 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 
 	for _, tgt := range expanded {
 		if !tgt.IsValid {
-			emit(1, "目标解析", fmt.Sprintf("⚠️ 目标格式无效: %s (错误: %s)", tgt.RawInput, tgt.ValidationError))
+			emit(1, "目标解析", fmt.Sprintf("[!] 目标格式无效: %s (错误: %s)", tgt.RawInput, tgt.ValidationError))
 			continue
 		}
 
 		if tgt.Kind == model.TargetKindDomain {
 			ips, err := net.LookupIP(tgt.Host)
 			if err == nil && len(ips) > 0 {
-				emit(1, "目标解析", fmt.Sprintf("🌐 域名解析成功: %s -> %s", tgt.Host, ips[0].String()))
+				emit(1, "目标解析", fmt.Sprintf("[+] 域名解析成功: %s -> %s", tgt.Host, ips[0].String()))
 			}
 		}
 
 		normalizedTargets = append(normalizedTargets, *tgt)
-		emit(1, "目标解析", fmt.Sprintf("🎯 目标规范化完成: %s -> %s (类型: %s, 资产Key: %s)", tgt.RawInput, tgt.CanonicalTarget, tgt.Kind, tgt.AssetKey), func(e *ProgressEvent) {
+		emit(1, "目标解析", fmt.Sprintf("[*] 目标规范化完成: %s -> %s (类型: %s, 资产Key: %s)", tgt.RawInput, tgt.CanonicalTarget, tgt.Kind, tgt.AssetKey), func(e *ProgressEvent) {
 			e.Target = tgt.CanonicalTarget
 		})
 	}
-	emit(1, "目标解析", fmt.Sprintf("✅ 阶段 1/5 完成: 共展开并就绪 %d 个目标资产 (耗时: %s)", len(normalizedTargets), time.Since(stage1Start)))
+	emit(1, "目标解析", fmt.Sprintf("[+] 阶段 1/5 完成: 共展开并就绪 %d 个目标资产 (耗时: %s)", len(normalizedTargets), time.Since(stage1Start)))
 
 	if len(normalizedTargets) == 0 {
 		return nil, fmt.Errorf("no valid targets to scan")
@@ -176,7 +165,7 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 			portRange = pol.PortScan.Profile
 		}
 
-		req := ProbeRequest{
+		req := model.ProbeRequest{
 			Host:       tgt.Host,
 			Port:       tgt.Port,
 			Transport:  "tcp",
@@ -184,10 +173,10 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 			ScanPolicy: pol.PortScan,
 		}
 
-		emit(2, "端口存活", fmt.Sprintf("🔍 正在探测端口: %s (范围: %s)...", tgt.Host, portRange))
+		emit(2, "端口存活", fmt.Sprintf("[*] 正在探测端口: %s (范围: %s)...", tgt.Host, portRange))
 		observations, err := r.probeAdapter.ScanPorts(ctx, req)
 		if err != nil {
-			emit(2, "端口存活", fmt.Sprintf("❌ 端口扫描异常 %s: %v", tgt.Host, err))
+			emit(2, "端口存活", fmt.Sprintf("[!] 端口扫描异常 %s: %v", tgt.Host, err))
 			continue
 		}
 
@@ -199,12 +188,12 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 			}
 		}
 
-		emit(2, "端口存活", fmt.Sprintf("🔓 目标 %s 发现 %d 个开放端口: %v", tgt.Host, len(openPortList), openPortList), func(e *ProgressEvent) {
+		emit(2, "端口存活", fmt.Sprintf("[+] 目标 %s 发现 %d 个开放端口: %v", tgt.Host, len(openPortList), openPortList), func(e *ProgressEvent) {
 			e.Target = tgt.Host
 			e.OpenPorts = openPortList
 		})
 	}
-	emit(2, "端口存活", fmt.Sprintf("✅ 阶段 2/5 完成: 累计发现开放端口 %d 个 (耗时: %s)", aggregator.Stats().OpenPorts, time.Since(stage2Start)))
+	emit(2, "端口存活", fmt.Sprintf("[+] 阶段 2/5 完成: 累计发现开放端口 %d 个 (耗时: %s)", aggregator.Stats().OpenPorts, time.Since(stage2Start)))
     
 	// 3. 服务识别
 	stage3Start := time.Now()
@@ -224,7 +213,7 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		emit(3, "服务识别", fmt.Sprintf("🔍 正在调用 Nmap 探测 Binary 服务版本: %s (端口: %v)...", host, ports))
+		emit(3, "服务识别", fmt.Sprintf("[*] 正在调用 Nmap 探测 Binary 服务版本: %s (端口: %v)...", host, ports))
 		nmapServicesByHost[host] = r.nmapScanner.DetectServices(ctx, host, ports)
 	}
 
@@ -237,7 +226,7 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 		}
 
 		_ = rateLimiter.Wait(ctx, obs.Host)
-		emit(3, "服务识别", fmt.Sprintf("🏷️ 正在分析协议与服务: %s:%d...", obs.Host, obs.Port))
+		emit(3, "服务识别", fmt.Sprintf("[*] 正在分析协议与服务: %s:%d...", obs.Host, obs.Port))
 
 		// 1. 优先使用 Nmap 针对 Bin 程序的探测结果
 		var svc model.Service
@@ -254,7 +243,7 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 			}
 		}
 
-		// 2. 若 Nmap 未探测到，则执行自研 Banner 探测
+		// 2. 若 Nmap 未探测到，则执行 Banner 探测
 		if svc.Protocol == "" || svc.Protocol == "unknown" {
 			proto, prod, fpTags, conf := r.fpEngine.IdentifyService(ctx, obs.Host, obs.Port, obs.Transport)
 			svc = model.Service{
@@ -271,13 +260,16 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 		}
 
 		// 3. TLS 握手检测
-		if obs.Port == 443 || obs.Port == 8443 || svc.Protocol == "https" {
+		isLikelyHTTPS := obs.Port == 443 || obs.Port == 8443 || svc.Protocol == "https"
+		if isLikelyHTTPS || svc.Protocol == "unknown" || svc.Protocol == "" || svc.Protocol == "http" {
 			tlsInfo, err := r.tlsAnalyzer.Analyze(ctx, obs.Host, obs.Port)
 			if err == nil && tlsInfo != nil {
-				svc.Protocol = "https"
+				if svc.Protocol != "https" {
+					svc.Protocol = "https"
+				}
 				svc.TLS = tlsInfo
 				svc.Confidence = model.ConfidenceCertain
-				emit(3, "服务识别", fmt.Sprintf("🔒 TLS 握手成功 %s:%d (版本: %s, 证书: %s)", obs.Host, obs.Port, tlsInfo.Version, tlsInfo.SubjectCN))
+				emit(3, "服务识别", fmt.Sprintf("[+] TLS 握手成功 %s:%d (版本: %s, 证书: %s)", obs.Host, obs.Port, tlsInfo.Version, tlsInfo.SubjectCN))
 			}
 		}
 
@@ -319,7 +311,7 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 			})
 		}
 
-		// 4. Web 服务识别：Wappalyzer +  FingerprintEngine 自定义规则
+		// 4. Web 服务识别：Wappalyzer +  fingerprint.FingerprintEngine 自定义规则
 		if svc.Protocol == "http" || svc.Protocol == "https" {
 			baseURL := fmt.Sprintf("%s://%s:%d", svc.Protocol, svc.Host, svc.Port)
 			resp, err := r.httpClient.Do(ctx, "GET", baseURL, nil, "")
@@ -355,20 +347,23 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 				}
 
 				if serverHdr, ok := resp.Headers["Server"]; ok && serverHdr != "" {
+					fallbackToken := strings.ToLower(strings.TrimSpace(strings.Split(serverHdr, "/")[0]))
+					fallbackToken = strings.Split(fallbackToken, " ")[0]
+					
 					allFacts = append(allFacts, model.Fact{
 						ID:         model.NewUUID(),
 						ScanRunID:  scanRunID,
 						AssetKey:   svc.Host,
-						Subject:    extractProductFromHeader(serverHdr),
+						Subject:    fallbackToken,
 						Kind:       model.FactKindHeaderToken,
 						Value:      serverHdr,
-						Confidence: model.ConfidenceCertain,
+						Confidence: model.ConfidenceTentative,
 						Source:     "header:Server",
 						ObservedAt: time.Now().UTC(),
 					})
 				}
 
-				extractedLinks := ExtractLinks(baseURL, resp.Body)
+				extractedLinks := fingerprint.ExtractLinks(baseURL, resp.Body)
 				for _, link := range extractedLinks {
 					allEndpoints = append(allEndpoints, model.Endpoint{
 						ID:           model.NewUUID(),
@@ -382,35 +377,35 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 					})
 				}
 				if len(extractedLinks) > 0 {
-					emit(3, "服务识别", fmt.Sprintf("🌐 从 HTML/JS 中提取出 %d 个动态端点与 API 路由", len(extractedLinks)))
+					emit(3, "服务识别", fmt.Sprintf("[+] 从 HTML/JS 中提取出 %d 个动态端点与 API 路由", len(extractedLinks)))
 				}
 			}
 		}
 	}
 
-	emit(3, "服务识别", fmt.Sprintf("🏷️ 识别提取到 %d 项服务与技术栈事实", len(allFacts)), func(e *ProgressEvent) {
+	emit(3, "服务识别", fmt.Sprintf("[+] 识别提取到 %d 项服务与技术栈", len(allFacts)), func(e *ProgressEvent) {
 		e.FactsCount = len(allFacts)
 	})
 	for _, f := range allFacts {
 		if f.Subject != "" {
-			emit(3, "服务识别", fmt.Sprintf("   - 资产事实: %s:%s (来源: %s)", f.Subject, f.Value, f.Source))
+			emit(3, "服务识别", fmt.Sprintf("   [*] 资产事实: %s:%s (来源: %s)", f.Subject, f.Value, f.Source))
 		}
 	}
-	emit(3, "服务识别", fmt.Sprintf("✅ 阶段 3/5 完成: 已识别服务 %d 个, 发现 Web 端点 %d 个 (耗时: %s)", len(allServices), len(allEndpoints), time.Since(stage3Start)))
+	emit(3, "服务识别", fmt.Sprintf("[+] 阶段 3/5 完成: 已识别服务 %d 个, 发现 Web 端点 %d 个 (耗时: %s)", len(allServices), len(allEndpoints), time.Since(stage3Start)))
 
 	// 4. nuclei POC 验证
 	stage4Start := time.Now()
-	baseChecks := r.ruleIndex.SelectChecks(allFacts, pol)
-	emit(4, "POC 验证", fmt.Sprintf("📋 倒排索引规则规划完成: 按资产事实匹配 %d 项漏洞检查", len(baseChecks)))
+	baseChecks := r.ruleIndex.SelectChecks(allFacts)
+	emit(4, "POC 验证", fmt.Sprintf("[*] 规划层: 资产事实匹配到 %d 条规则", len(baseChecks)))
 
-	// 仅对 web 服务使用 nuclei 
+	// 对每一个存活的服务端点执行漏洞检查
 	for _, svc := range allServices {
-		if svc.Protocol != "http" && svc.Protocol != "https" {
-			continue
+		if svc.Protocol == "unknown" {
+			continue // 遵循第一性原理，未知协议坚决不盲发 POC
 		}
 
 		checks := baseChecks
-		for _, spec := range r.ruleIndex.SelectByProtocol(svc.Protocol, pol) {
+		for _, spec := range r.ruleIndex.SelectByProtocol(svc.Protocol) {
 			duplicated := false
 			for _, c := range checks {
 				if c.ID == spec.ID {
@@ -427,7 +422,7 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 		}
 
 		targetURL := fmt.Sprintf("%s://%s:%d", svc.Protocol, svc.Host, svc.Port)
-		targetCtx := CheckContext{
+		targetCtx := model.CheckContext{
 			ScanRunID:   scanRunID,
 			TargetURL:   targetURL,
 			ServiceHost: svc.Host,
@@ -437,22 +432,22 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 			Policy:      pol,
 		}
 
-		emit(4, "POC 验证", fmt.Sprintf("🛡️ 正在对 %s 聚合执行 %d 项漏洞检查...", targetURL, len(checks)))
+		emit(4, "POC 验证", fmt.Sprintf("[*] 正在对 %s 聚合执行 %d 项漏洞检查...", targetURL, len(checks)))
 		findings, err := r.checkExecutor.ExecuteChecks(ctx, checks, targetCtx)
 		if err != nil {
-			emit(4, "POC 验证", fmt.Sprintf("⚠️ 检查执行告警 [%s]: %v", targetURL, err))
+			emit(4, "POC 验证", fmt.Sprintf("[!] 检查执行告警 [%s]: %v", targetURL, err))
 			continue
 		}
 
 		for _, f := range findings {
 			aggregator.IngestFinding(f)
-			emit(4, "POC 验证", fmt.Sprintf("🚨 发现并确证漏洞: [%s] %s (严重度: %s, 目标: %s)", f.CheckID, f.Title, f.Severity, f.MatchedAt), func(e *ProgressEvent) {
+			emit(4, "POC 验证", fmt.Sprintf("[!] 发现并确证漏洞: [%s] %s (严重度: %s, 目标: %s)", f.CheckID, f.Title, f.Severity, f.MatchedAt), func(e *ProgressEvent) {
 				e.FindingName = f.Title
 				e.Severity = string(f.Severity)
 			})
 		}
 	}
-	emit(4, "POC 验证", fmt.Sprintf("✅ 阶段 4/5 完成: 累计确证漏洞 %d 个 (耗时: %s)", len(aggregator.GetUniqueFindings()), time.Since(stage4Start)))
+	emit(4, "POC 验证", fmt.Sprintf("[+] 阶段 4/5 完成: 累计确证漏洞 %d 个 (耗时: %s)", len(aggregator.GetUniqueFindings()), time.Since(stage4Start)))
 
 
 	// 5. 去重报告输出
@@ -466,8 +461,8 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 	finalStats.FindingsCount = len(uniqueFindings)
 	finalStats.DurationMs = time.Since(start).Milliseconds()
 
-	emit(5, "去重报告输出", fmt.Sprintf("📊 正在执行资产维度去重与汇聚... 总耗时: %s", time.Since(start)))
-	emit(5, "去重报告输出", fmt.Sprintf("✅ 阶段 5/5 完成 (耗时: %s)", time.Since(stage5Start)))
+	emit(5, "去重报告输出", fmt.Sprintf("[*] 正在执行资产维度去重与汇聚... 总耗时: %s", time.Since(start)))
+	emit(5, "去重报告输出", fmt.Sprintf("[+] 阶段 5/5 完成 (耗时: %s)", time.Since(stage5Start)))
 
 	return &ScanResult{
 		ScanRunID:    scanRunID,
@@ -484,22 +479,14 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 	}, nil
 }
 
-func extractProductFromHeader(hdr string) string {
-	lower := strings.ToLower(hdr)
-	if strings.Contains(lower, "nginx") {
-		return "nginx"
-	}
-	if strings.Contains(lower, "apache") {
-		return "apache"
-	}
-	if strings.Contains(lower, "tomcat") {
-		return "tomcat"
-	}
-	if strings.Contains(lower, "kibana") {
-		return "kibana"
-	}
-	if strings.Contains(lower, "grafana") {
-		return "grafana"
-	}
-	return strings.Split(lower, "/")[0]
-}
+
+
+
+
+
+
+
+
+
+
+

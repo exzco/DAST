@@ -2,13 +2,14 @@ package model
 
 import "time"
 
-type IntrusiveLevel string
+type CheckType string
 
 const (
-	IntrusiveLevelPassive   IntrusiveLevel = "PASSIVE"
-	IntrusiveLevelSafe      IntrusiveLevel = "SAFE_ACTIVE"
-	IntrusiveLevelIntrusive IntrusiveLevel = "INTRUSIVE"
+	CheckTypeProbe   CheckType = "PROBE"   // 指纹探测
+	CheckTypeExploit CheckType = "EXPLOIT" // 漏洞利用 POC
 )
+
+
 
 type ScopeRule struct {
 	ID      string `json:"id"`
@@ -39,33 +40,23 @@ type PortScanPolicy struct {
 }
 
 type Policy struct {
-	ID              string          `json:"id"`
-	TenantID        string          `json:"tenant_id"`
-	Name            string          `json:"name"`
-	Version         int             `json:"version"`
-	IntrusiveLevel  IntrusiveLevel  `json:"intrusive_level"`
-	RequireApproval bool            `json:"require_approval"`
-	ScopeRules      []ScopeRule     `json:"scope_rules"`
-	RateLimit       RateLimitPolicy `json:"rate_limit"`
-	Budget          BudgetPolicy    `json:"budget"`
-	PortScan        PortScanPolicy  `json:"port_scan"`
-	AllowedTags     []string        `json:"allowed_tags"`
-	DeniedTags      []string        `json:"denied_tags"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
+	ID        string          `json:"id"`
+	Name       string          `json:"name"`
+	ScopeRules []ScopeRule     `json:"scope_rules"`
+	RateLimit  RateLimitPolicy `json:"rate_limit"`
+	Budget    BudgetPolicy    `json:"budget"`
+	PortScan  PortScanPolicy  `json:"port_scan"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }
 
-func DefaultPolicy(tenantID string) *Policy {
+func DefaultPolicy() *Policy {
 	now := NowUTC()
 	return &Policy{
-		ID:              NewUUID(),
-		TenantID:        tenantID,
-		Name:            "Default Enterprise Safe Policy",
-		Version:         1,
-		IntrusiveLevel:  IntrusiveLevelSafe,
-		RequireApproval: false,
-		ScopeRules:      []ScopeRule{},
-		RateLimit: RateLimitPolicy{
+		ID:        NewUUID(),
+		Name:       "Default Basic Policy",
+		ScopeRules: []ScopeRule{},
+		RateLimit:  RateLimitPolicy{
 			MaxRPS:            50,
 			MaxConcurrentHost: 5,
 			MaxConcurrentScan: 20,
@@ -83,9 +74,7 @@ func DefaultPolicy(tenantID string) *Policy {
 			TimeoutSec:  5,
 			RatePackets: 1000,
 		},
-		AllowedTags: []string{},
-		DeniedTags:  []string{"dos", "fuzz", "bruteforce", "destructive", "overflow", "crash", "exhaustion"},
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 }

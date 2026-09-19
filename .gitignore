@@ -13,3 +13,4 @@ docs/
 .claude.json
 todo.md
 benchmark/
+scratch_test*

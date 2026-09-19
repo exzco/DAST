@@ -1,5 +1,5 @@
 // Package engine provides result aggregation, deduplication, and rate/budget governance.
-package engine
+package dedup
 
 import (
 	"context"
@@ -52,7 +52,7 @@ func (a *Aggregator) IngestFinding(f model.Finding) {
 	defer a.mu.Unlock()
 
 	if f.StableKey == "" {
-		f.StableKey = model.GenerateStableFindingKey(f.TenantID, f.MatchedAt, f.MatchedAt, f.CheckID, f.Parameter, "")
+		f.StableKey = model.GenerateStableFindingKey(f.MatchedAt, f.MatchedAt, f.CheckID, f.Parameter, "")
 	}
 
 	existing, exists := a.findings[f.StableKey]
@@ -220,3 +220,4 @@ func (b *BudgetTracker) CheckAndRecordRequest() error {
 	b.requestsUsed++
 	return nil
 }
+

@@ -16,7 +16,23 @@ type Config struct {
 	Scan       ScanConfig
 	Queue      QueueKeys
 	PortScan   PortScanConfig
+	AI         AIConfig
+	Fofa       FOFAConfig
 	ConsoleLog bool
+}
+
+type FOFAConfig struct {
+	Email string
+	Key   string
+}
+
+type AIConfig struct {
+	Enabled   bool
+	Endpoint  string
+	APIKey    string
+	Model     string
+	Timeout   time.Duration
+	MaxTokens int
 }
 
 type RedisConfig struct {
@@ -71,6 +87,18 @@ func Load() *Config {
 			Timeout:  envDuration("PORTSCAN_TIMEOUT", 5) * time.Second,
 			Threads:  envInt("PORTSCAN_THREADS", 25),
 			ScanType: mustEnv("PORTSCAN_TYPE", "connect"),
+		},
+		AI: AIConfig{
+			Enabled:   envBool("AI_ENABLED", false),
+			Endpoint:  mustEnv("AI_ENDPOINT", ""),
+			APIKey:    getEnv("AI_API_KEY"),
+			Model:     mustEnv("AI_MODEL", "gemini-3.8-flash"),
+			Timeout:   time.Duration(envInt("AI_TIMEOUT_MS", 30000)) * time.Millisecond,
+			MaxTokens: envInt("AI_MAX_TOKENS", 2048),
+		},
+		Fofa: FOFAConfig{
+			Email: getEnv("FOFA_EMAIL"),
+			Key:   getEnv("FOFA_KEY"),
 		},
 		ConsoleLog: envBool("CONSOLE_LOG", true),
 	}

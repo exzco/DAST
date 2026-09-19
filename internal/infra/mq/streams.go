@@ -1,4 +1,4 @@
-package distributed
+package mq
 
 import (
 	"context"
@@ -46,7 +46,7 @@ func (s *StreamClient) Ack(ctx context.Context, stream, group, messageID string)
 	return s.rdb.XAck(ctx, stream, group, messageID).Err()
 }
 
-// WriteScanResult 将单目标扫描统计写入中心结果池 (dast:results:{runID}) 与实时进度计数 (dast:status:{runID})
+// 将单目标扫描统计写入中心结果池 (dast:results:{runID}) 与实时进度计数 (dast:status:{runID})
 func (s *StreamClient) WriteScanResult(ctx context.Context, runID, target string, st model.ScanRunStats) error {
 	runKey := fmt.Sprintf("dast:results:%s", runID)
 	statusKey := fmt.Sprintf("dast:status:%s", runID)
@@ -91,3 +91,4 @@ func (s *StreamClient) ReadGroup(ctx context.Context, stream, group, consumer st
 	}
 	return nil, nil
 }
+

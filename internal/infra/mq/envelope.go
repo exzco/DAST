@@ -1,4 +1,4 @@
-package distributed
+package mq
 
 import (
 	"encoding/json"
@@ -79,3 +79,4 @@ func NewEnvelope(idempotencyKey string, payloadType string, payload any, maxAtte
 		Payload:        data,
 	}, nil
 }
+

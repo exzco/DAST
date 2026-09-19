@@ -1,8 +1,10 @@
-package engine
+package portscan
 
 import (
 	"context"
 	"net"
+	"distributed-scanner/internal/infra/network"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,10 +30,9 @@ func NewNativePortScanner() *NativePortScanner {
 	return &NativePortScanner{}
 }
 
-func (s *NativePortScanner) ScanPorts(ctx context.Context, req ProbeRequest) ([]model.PortObservation, error) {
+func (s *NativePortScanner) ScanPorts(ctx context.Context, req model.ProbeRequest) ([]model.PortObservation, error) {
 	start := time.Now()
 	ports := ParsePortRange(req.PortRange)
-	// 自实现端口探测
 	openPorts, err := NativeGoScan(ctx, req.Host, ports, 150, 400*time.Millisecond)
 	duration := time.Since(start).Milliseconds()
 
@@ -64,8 +65,9 @@ func NativeGoScan(ctx context.Context, host string, ports []int, concurrency int
 
 	portsChan := make(chan int, len(ports))
 	resultsChan := make(chan int, len(ports))
-	// 并发
 	var wg sync.WaitGroup
+
+	dialer := network.NewDialer(timeout)
 
 	for i := 0; i < concurrency; i++ {
 		wg.Add(1)
@@ -79,7 +81,7 @@ func NativeGoScan(ctx context.Context, host string, ports []int, concurrency int
 				}
 
 				addr := net.JoinHostPort(host, strconv.Itoa(p))
-				conn, err := net.DialTimeout("tcp", addr, timeout)
+				conn, err := dialer.DialContext(ctx, "tcp", addr)
 				if err == nil {
 					_ = conn.Close()
 					resultsChan <- p
@@ -108,54 +110,54 @@ func ParsePortRange(portRange string) []int {
 	if portRange == "" || portRange == "top100" {
 		return CommonTop100Ports
 	}
+
+	portSet := make(map[int]struct{})
+
 	if portRange == "top1000" {
-		portsMap := make(map[int]bool)
 		for _, p := range CommonTop100Ports {
-			portsMap[p] = true
+			portSet[p] = struct{}{}
 		}
 		for p := 1; p <= 1024; p++ {
-			portsMap[p] = true
+			portSet[p] = struct{}{}
 		}
-		var list []int
-		for p := range portsMap {
-			list = append(list, p)
-		}
-		return list
-	}
-
-	var result []int
-	parts := strings.Split(portRange, ",")
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if strings.Contains(part, "-") {
-			subParts := strings.Split(part, "-")
-			if len(subParts) == 2 {
-				start, err1 := strconv.Atoi(strings.TrimSpace(subParts[0]))
-				end, err2 := strconv.Atoi(strings.TrimSpace(subParts[1]))
-				if err1 == nil && err2 == nil && start > 0 && end >= start && end <= 65535 {
+	} else {
+		for _, part := range strings.Split(portRange, ",") {
+			bounds := strings.Split(strings.TrimSpace(part), "-")
+			if len(bounds) == 1 {
+				if p, err := strconv.Atoi(bounds[0]); err == nil && p > 0 && p <= 65535 {
+					portSet[p] = struct{}{}
+				}
+				continue
+			}
+			if len(bounds) == 2 {
+				start, err1 := strconv.Atoi(strings.TrimSpace(bounds[0]))
+				end, err2 := strconv.Atoi(strings.TrimSpace(bounds[1]))
+				if err1 == nil && err2 == nil && start > 0 && start <= end && end <= 65535 {
 					for p := start; p <= end; p++ {
-						result = append(result, p)
+						portSet[p] = struct{}{}
 					}
 				}
 			}
-		} else {
-			p, err := strconv.Atoi(part)
-			if err == nil && p > 0 && p <= 65535 {
-				result = append(result, p)
-			}
 		}
 	}
 
-	if len(result) == 0 {
+	if len(portSet) == 0 {
 		return CommonTop100Ports
 	}
+
+	// 保证输出排序
+	result := make([]int, 0, len(portSet))
+	for p := range portSet {
+		result = append(result, p)
+	}
+	
+	sort.Ints(result)
 	return result
 }
 
-
 type NmapProbeAdapter struct{}
 
-func (a *NmapProbeAdapter) ScanPorts(ctx context.Context, req ProbeRequest) ([]model.PortObservation, error) {
+func (a *NmapProbeAdapter) ScanPorts(ctx context.Context, req model.ProbeRequest) ([]model.PortObservation, error) {
 	opts := []nmap.Option{
 		nmap.WithTargets(req.Host),
 		nmap.WithSkipHostDiscovery(),
@@ -193,4 +195,27 @@ func (a *NmapProbeAdapter) ScanPorts(ctx context.Context, req ProbeRequest) ([]m
 		}
 	}
 	return observations, nil
+}
+
+type HybridPortScanner struct {
+	nmapScanner   *NmapProbeAdapter
+	nativeScanner *NativePortScanner
+}
+
+func NewHybridPortScanner() *HybridPortScanner {
+	return &HybridPortScanner{
+		nmapScanner:   &NmapProbeAdapter{},
+		nativeScanner: &NativePortScanner{},
+	}
+}
+
+func (s *HybridPortScanner) ScanPorts(ctx context.Context, req model.ProbeRequest) ([]model.PortObservation, error) {
+	// 先尝试 Nmap 扫描
+	observations, err := s.nmapScanner.ScanPorts(ctx, req)
+	if err == nil {
+		return observations, nil
+	}
+
+	// Nmap 失败回退
+	return s.nativeScanner.ScanPorts(ctx, req)
 }

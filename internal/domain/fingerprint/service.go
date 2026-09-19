@@ -1,5 +1,5 @@
-// Package engine provides core scanning and service identification logic.
-package engine
+// package fingerprint provides core scanning and service identification logic.
+package fingerprint
 
 import (
 	"bytes"
@@ -9,8 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
+	"distributed-scanner/internal/infra/network"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -44,26 +44,15 @@ type HTTPClient struct {
 }
 
 func NewHTTPClient(timeout time.Duration) *HTTPClient {
-	if timeout <= 0 {
-		timeout = 10 * time.Second
-	}
-	tr := &http.Transport{
-		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     30 * time.Second,
+	c := network.NewHTTPClient(timeout)
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return http.ErrUseLastResponse
+		}
+		return nil
 	}
 	return &HTTPClient{
-		client: &http.Client{
-			Transport: tr,
-			Timeout:   timeout,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 5 {
-					return http.ErrUseLastResponse
-				}
-				return nil
-			},
-		},
+		client: c,
 	}
 }
 
@@ -79,7 +68,7 @@ func (c *HTTPClient) Do(ctx context.Context, method, targetURL string, headers m
 		return nil, fmt.Errorf("create http request: %w", err)
 	}
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) DAST-Scanner/1.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) D-Scanner/1.0")
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -184,7 +173,7 @@ func (a *TLSAnalyzer) Analyze(ctx context.Context, host string, port int) (*mode
 	}
 	addr := fmt.Sprintf("%s:%d", host, port)
 
-	dialer := &net.Dialer{Timeout: a.dialTimeout}
+	dialer := network.NewDialer(a.dialTimeout)
 	conf := &tls.Config{
 		InsecureSkipVerify: true,
 		ServerName:         host,
@@ -271,7 +260,7 @@ func (s *NmapServiceScanner) DetectServices(ctx context.Context, host string, po
 		nmap.WithTargets(host),
 		nmap.WithPorts(portRange),
 		nmap.WithServiceInfo(),
-		nmap.WithVersionIntensity(2),
+		nmap.WithVersionIntensity(5),
 		nmap.WithSkipHostDiscovery(),
 		nmap.WithDisabledDNSResolution(),
 	)
@@ -307,13 +296,7 @@ func (s *NmapServiceScanner) DetectServices(ctx context.Context, host string, po
 }
 
 
-// Wappalyzer + Custom FingerprintEngine ，先使用 wappalyzer ，再使用自定义指纹识别
-type HTTPRule struct {
-	Tags    []string `json:"tags"`
-	Headers []string `json:"headers,omitempty"`
-	Body    []string `json:"body,omitempty"`
-}
-
+// Wappalyzer + Custom Banner Engine
 type BannerRule struct {
 	Tags      []string `json:"tags"`
 	Prefix    string   `json:"prefix,omitempty"`
@@ -321,8 +304,7 @@ type BannerRule struct {
 }
 
 type FingerprintRuleSet struct {
-	HTTPRules   []HTTPRule   `json:"http_rules"`
-	BannerRules []BannerRule `json:"banner_rules"`
+	BannerRules   []BannerRule            `json:"banner_rules"`
 }
 
 type FingerprintEngine struct {
@@ -334,31 +316,26 @@ type FingerprintEngine struct {
 func NewFingerprintEngine(rulesPath string) *FingerprintEngine {
 	engine := &FingerprintEngine{}
 
-	// Initialize Wappalyzer
-	if wapp, err := wappalyzer.New(); err == nil {
-		engine.wappalyzer = wapp
-	}
-
 	if rulesPath == "" {
 		rulesPath = "data/fingerprints.json"
 	}
 
-	searchPaths := []string{
-		rulesPath,
-		"./data/fingerprints.json",
-		"../data/fingerprints.json",
-		"../../data/fingerprints.json",
+	customWappalyzerPath := filepath.Join(filepath.Dir(rulesPath), "custom_wappalyzer.json")
+	if _, err := os.Stat(customWappalyzerPath); err == nil {
+		// 使用 Wappalyzer，并注入可扩展的 JSON 集
+		if wapp, err := wappalyzer.NewFromFile(customWappalyzerPath, true, true); err == nil {
+			engine.wappalyzer = wapp
+		}
+	} else {
+		if wapp, err := wappalyzer.New(); err == nil {
+			engine.wappalyzer = wapp
+		}
 	}
 
-	for _, p := range searchPaths {
-		if abs, err := filepath.Abs(p); err == nil {
-			if data, err := os.ReadFile(abs); err == nil {
-				var loaded FingerprintRuleSet
-				if json.Unmarshal(data, &loaded) == nil && (len(loaded.HTTPRules) > 0 || len(loaded.BannerRules) > 0) {
-					engine.rules = loaded
-					break
-				}
-			}
+	if data, err := os.ReadFile(rulesPath); err == nil {
+		var loaded FingerprintRuleSet
+		if json.Unmarshal(data, &loaded) == nil && len(loaded.BannerRules) > 0 {
+			engine.rules = loaded
 		}
 	}
 	return engine
@@ -368,7 +345,7 @@ func NewFingerprintEngine(rulesPath string) *FingerprintEngine {
 func (fe *FingerprintEngine) DetectWebTechnologies(rawHeader http.Header, headers map[string]string, body string) (tags []string, product string) {
 	tagSet := make(map[string]bool)
 
-	// 1. Wappalyzer 探测
+	// Wappalyzer 探测
 	if fe.wappalyzer != nil && rawHeader != nil {
 		wappTechs := fe.wappalyzer.Fingerprint(rawHeader, []byte(body))
 		for tech := range wappTechs {
@@ -380,89 +357,10 @@ func (fe *FingerprintEngine) DetectWebTechnologies(rawHeader http.Header, header
 		}
 	}
 
-	// 2. Custom FingerprintEngine  探测
-	customTags, customProd := fe.MatchHTTP(headers, body)
-	for _, t := range customTags {
-		tagSet[t] = true
-	}
-	if product == "" && customProd != "" {
-		product = customProd
-	}
-
 	for t := range tagSet {
 		tags = append(tags, t)
 	}
 	return tags, product
-}
-
-func (fe *FingerprintEngine) MatchHTTP(headers map[string]string, body string) (matchedTags []string, product string) {
-	fe.mu.RLock()
-	defer fe.mu.RUnlock()
-
-	tagSet := make(map[string]bool)
-	lowerBody := strings.ToLower(body)
-
-	for _, rule := range fe.rules.HTTPRules {
-		matched := true
-
-		if len(rule.Headers) > 0 {
-			headerMatched := false
-			for _, reqHdr := range rule.Headers {
-				if strings.Contains(reqHdr, ":") {
-					parts := strings.SplitN(reqHdr, ":", 2)
-					reqKey := strings.TrimSpace(parts[0])
-					reqVal := strings.ToLower(strings.TrimSpace(parts[1]))
-
-					for k, v := range headers {
-						if strings.EqualFold(k, reqKey) && strings.Contains(strings.ToLower(v), reqVal) {
-							headerMatched = true
-							break
-						}
-					}
-				} else {
-					for k := range headers {
-						if strings.EqualFold(k, reqHdr) {
-							headerMatched = true
-							break
-						}
-					}
-				}
-				if headerMatched {
-					break
-				}
-			}
-			if !headerMatched {
-				matched = false
-			}
-		}
-
-		if matched && len(rule.Body) > 0 {
-			bodyMatched := false
-			for _, b := range rule.Body {
-				if strings.Contains(lowerBody, strings.ToLower(b)) {
-					bodyMatched = true
-					break
-				}
-			}
-			if !bodyMatched {
-				matched = false
-			}
-		}
-
-		if matched {
-			for _, t := range rule.Tags {
-				tagSet[t] = true
-				if product == "" {
-					product = t
-				}
-			}
-		}
-	}
-
-	for t := range tagSet {
-		matchedTags = append(matchedTags, t)
-	}
-	return matchedTags, product
 }
 
 func (fe *FingerprintEngine) MatchBanner(banner []byte) (matchedTags []string, product string) {
@@ -508,7 +406,7 @@ func (fe *FingerprintEngine) GrabBanner(ctx context.Context, host string, port i
 		timeout = 500 * time.Millisecond
 	}
 	addr := fmt.Sprintf("%s:%d", host, port)
-	dialer := &net.Dialer{Timeout: timeout}
+	dialer := network.NewDialer(timeout)
 
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -550,34 +448,9 @@ func (fe *FingerprintEngine) IdentifyService(ctx context.Context, host string, p
 		}
 	}
 
-	switch port {
-	case 80, 8080, 8081, 8082, 8083, 8084, 8085, 9200, 3000, 5601, 7890:
-		return "http", "", []string{"http"}, model.ConfidenceFirm
-	case 443, 8443:
-		return "https", "", []string{"https"}, model.ConfidenceFirm
-	case 22:
-		return "ssh", "openssh", []string{"ssh"}, model.ConfidenceTentative
-	case 135:
-		return "msrpc", "microsoft-rpc", []string{"msrpc"}, model.ConfidenceTentative
-	case 445:
-		return "smb", "microsoft-ds", []string{"smb"}, model.ConfidenceTentative
-	case 3306, 33060:
-		return "mysql", "mysql", []string{"mysql"}, model.ConfidenceTentative
-	case 6379, 6380:
-		return "redis", "redis", []string{"redis"}, model.ConfidenceTentative
-	case 27017:
-		return "mongodb", "mongodb", []string{"mongodb"}, model.ConfidenceTentative
-	case 5432:
-		return "postgres", "postgresql", []string{"postgres"}, model.ConfidenceTentative
-	case 1433:
-		return "mssql", "microsoft-sql-server", []string{"mssql"}, model.ConfidenceTentative
-	case 1521:
-		return "oracle", "oracle-tns", []string{"oracle"}, model.ConfidenceTentative
-	case 21:
-		return "ftp", "ftp", []string{"ftp"}, model.ConfidenceTentative
-	case 25, 465, 587:
-		return "smtp", "smtp", []string{"smtp"}, model.ConfidenceTentative
-	default:
-		return "unknown", "", nil, model.ConfidenceTentative
-	}
+	return "unknown", "", nil, model.ConfidenceTentative
 }
+
+
+
+

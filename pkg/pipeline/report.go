@@ -1,4 +1,4 @@
-package service
+package pipeline
 
 import (
 	"encoding/json"
@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"distributed-scanner/internal/engine"
+
 	"distributed-scanner/internal/model"
 )
 
@@ -17,7 +17,7 @@ func NewReportExporter() *ReportExporter {
 	return &ReportExporter{}
 }
 
-func (e *ReportExporter) ExportJSON(res *engine.ScanResult, outPath string) error {
+func (e *ReportExporter) ExportJSON(res *ScanResult, outPath string) error {
 	data, err := json.MarshalIndent(res, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal scan result: %w", err)
@@ -33,16 +33,16 @@ func (e *ReportExporter) ExportJSON(res *engine.ScanResult, outPath string) erro
 	return os.WriteFile(outPath, data, 0644)
 }
 
-func (e *ReportExporter) ExportMarkdown(res *engine.ScanResult, outPath string) error {
+func (e *ReportExporter) ExportMarkdown(res *ScanResult, outPath string) error {
 	var sb strings.Builder
 
-	sb.WriteString("# 🛡️ DAST 漏洞扫描报告 (Executive Scan Report)\n\n")
+	sb.WriteString("# DAST 漏洞扫描报告\n\n")
 	sb.WriteString(fmt.Sprintf("- **任务 ID**: `%s`\n", res.ScanRunID))
 	sb.WriteString(fmt.Sprintf("- **开始时间**: `%s`\n", res.StartedAt.Format("2006-01-02 15:04:05 UTC")))
 	sb.WriteString(fmt.Sprintf("- **完成时间**: `%s`\n", res.CompletedAt.Format("2006-01-02 15:04:05 UTC")))
 	sb.WriteString(fmt.Sprintf("- **总耗时**: `%d ms`\n\n", res.DurationMs))
 
-	sb.WriteString("## 1. 扫描概要 (Executive Summary)\n\n")
+	sb.WriteString("## 1. 扫描概要\n\n")
 	sb.WriteString("| 指标项 | 统计数量 |\n")
 	sb.WriteString("|---|---|\n")
 	sb.WriteString(fmt.Sprintf("| 扫描目标总数 | %d |\n", res.Stats.TotalTargets))
@@ -51,9 +51,9 @@ func (e *ReportExporter) ExportMarkdown(res *engine.ScanResult, outPath string) 
 	sb.WriteString(fmt.Sprintf("| 发现 Web 端点 | %d |\n", res.Stats.EndpointsFound))
 	sb.WriteString(fmt.Sprintf("| 确证漏洞总数 | %d |\n\n", len(res.Findings)))
 
-	sb.WriteString("## 2. 发现的漏洞清单 (Findings)\n\n")
+	sb.WriteString("## 2. 发现的漏洞清单\n\n")
 	if len(res.Findings) == 0 {
-		sb.WriteString("✨ **未发现任何已知风险漏洞**。\n\n")
+		sb.WriteString("**未发现任何已知风险漏洞**。\n\n")
 	} else {
 		sb.WriteString("| 严重度 | 漏洞名称 | 规则 ID | 命中目标 | 置信度 |\n")
 		sb.WriteString("|---|---|---|---|---|\n")
@@ -64,7 +64,7 @@ func (e *ReportExporter) ExportMarkdown(res *engine.ScanResult, outPath string) 
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString("## 3. 资产与网络服务详情 (Services Discovered)\n\n")
+	sb.WriteString("## 3. 资产与网络服务详情\n\n")
 	if len(res.Services) == 0 {
 		sb.WriteString("未发现开放服务。\n\n")
 	} else {
@@ -93,14 +93,15 @@ func (e *ReportExporter) ExportMarkdown(res *engine.ScanResult, outPath string) 
 func severityBadge(sev model.Severity) string {
 	switch sev {
 	case model.SeverityCritical:
-		return "🔴 严重 (CRITICAL)"
+		return "严重 (CRITICAL)"
 	case model.SeverityHigh:
-		return "🟠 高危 (HIGH)"
+		return "高危 (HIGH)"
 	case model.SeverityMedium:
-		return "🟡 中危 (MEDIUM)"
+		return "中危 (MEDIUM)"
 	case model.SeverityLow:
-		return "🔵 低危 (LOW)"
+		return "低危 (LOW)"
 	default:
-		return "⚪ 提示 (INFO)"
+		return "提示 (INFO)"
 	}
 }
+

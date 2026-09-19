@@ -14,7 +14,6 @@ type ScanRunStats struct {
 
 type ScanRun struct {
 	ID             string        `json:"id"`
-	TenantID       string        `json:"tenant_id"`
 	ProjectID      string        `json:"project_id"`
 	Name           string        `json:"name"`
 	State          ScanState     `json:"state"`
@@ -43,29 +42,13 @@ type StageRun struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
-type Tenant struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Status    string    `json:"status"` // ACTIVE, SUSPENDED
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
 type Project struct {
 	ID          string    `json:"id"`
-	TenantID    string    `json:"tenant_id"`
 	Name        string    `json:"name"`
 	Description string    `json:"description,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
-
-type PluginKind string
-
-const (
-	PluginKindNuclei PluginKind = "NUCLEI"
-	PluginKindCustom PluginKind = "CUSTOM"
-)
 
 type Prerequisite struct {
 	Protocols []string `json:"protocols,omitempty"`
@@ -75,9 +58,8 @@ type Prerequisite struct {
 type CheckSpec struct {
 	ID             string         `json:"id"`
 	Name           string         `json:"name"`
-	Kind           PluginKind     `json:"kind"`
+	CheckType      CheckType      `json:"check_type"`
 	Severity       Severity       `json:"severity"`
-	IntrusiveLevel IntrusiveLevel `json:"intrusive_level"`
 	Prerequisites  Prerequisite   `json:"prerequisites"`
 	Tags           []string       `json:"tags"`
 	TimeoutSec     int            `json:"timeout_sec"`

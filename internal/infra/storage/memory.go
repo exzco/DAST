@@ -36,3 +36,4 @@ func (s *MemoryStore) GetScanRun(ctx context.Context, id string) (*model.ScanRun
 	}
 	return run, nil
 }
+

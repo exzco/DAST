@@ -1,5 +1,5 @@
 // Package distributed provides Redis Streams multi-tiered distributed task queue orchestration and worker runtimes.
-package distributed
+package mq
 
 import (
 	"context"
@@ -9,13 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"distributed-scanner/internal/engine"
+	"distributed-scanner/pkg/pipeline"
+
 	"distributed-scanner/internal/model"
 
 	"github.com/redis/go-redis/v9"
 )
 
-// 扫描完成日志前缀，供集群监控/benchmark 统计
 const scanDoneLog = "[scan-done]"
 
 const (
@@ -30,10 +30,10 @@ type WorkerRuntime struct {
 	targetStream string
 	group        string
 	consumerID   string
-	runner       *engine.Runner
+	runner       *pipeline.Runner
 }
 
-func NewWorkerRuntime(rdb *redis.Client, rawStream, targetStream, group string, runner *engine.Runner) *WorkerRuntime {
+func NewWorkerRuntime(rdb *redis.Client, rawStream, targetStream, group string, runner *pipeline.Runner) *WorkerRuntime {
 	if rawStream == "" {
 		rawStream = DefaultRawStream
 	}
@@ -54,21 +54,18 @@ func NewWorkerRuntime(rdb *redis.Client, rawStream, targetStream, group string, 
 	}
 }
 
-// Run launches concurrent worker loops for both raw ingestion/expansion and scanning execution.
 func (w *WorkerRuntime) Run(ctx context.Context) error {
 	_ = w.client.CreateGroup(ctx, w.rawStream, w.group)
 	_ = w.client.CreateGroup(ctx, w.targetStream, w.group)
 
 	var wg sync.WaitGroup
 
-	// Loop 1: Ingestion & Distributed Target Parser (dast.command.raw -> dast.command.network)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		w.runParserLoop(ctx)
 	}()
 
-	// Loop 2: Network Scan Execution (dast.command.network -> 5-stage pipeline)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -79,7 +76,6 @@ func (w *WorkerRuntime) Run(ctx context.Context) error {
 	return nil
 }
 
-// runParserLoop consumes raw target tasks from rawStream, expands CIDR/domains, and publishes to targetStream.
 func (w *WorkerRuntime) runParserLoop(ctx context.Context) {
 	for {
 		select {
@@ -151,7 +147,6 @@ func (w *WorkerRuntime) runParserLoop(ctx context.Context) {
 	}
 }
 
-// runScanLoop consumes single normalized targets from targetStream and executes the 5-stage pipeline.
 func (w *WorkerRuntime) runScanLoop(ctx context.Context) {
 	for {
 		select {
@@ -184,8 +179,7 @@ func (w *WorkerRuntime) runScanLoop(ctx context.Context) {
 
 			var input StageInput
 			if err := json.Unmarshal(env.Payload, &input); err == nil {
-				// Execute 5-stage scanning in-process on this worker node
-				res, runErr := w.runner.Run(ctx, engine.ScanOptions{
+				res, runErr := w.runner.Run(ctx, pipeline.ScanOptions{
 					Targets:      []string{input.Target},
 					PortOverride: input.PortRange,
 					Profile:      "fast",
@@ -193,7 +187,7 @@ func (w *WorkerRuntime) runScanLoop(ctx context.Context) {
 				if runErr != nil {
 					fmt.Printf("[worker %s] 扫描失败 %s: %v\n", w.consumerID, input.Target, runErr)
 				} else if res != nil {
-					// 上报统计到中心结果池，供控制端聚合与实时进度追踪
+					// 上报到结果池
 					if err := w.client.WriteScanResult(ctx, input.ScanRunID, input.Target, res.Stats); err != nil {
 						fmt.Printf("[worker %s] 上报结果失败 %s: %v\n", w.consumerID, input.Target, err)
 					}
@@ -207,3 +201,7 @@ func (w *WorkerRuntime) runScanLoop(ctx context.Context) {
 		}
 	}
 }
+
+
+
+
