@@ -52,7 +52,6 @@ func NewHTTPClient(timeout time.Duration) *http.Client {
 	}
 }
 
-// 统一的 TCP 拨号器
 func NewDialer(timeout time.Duration) *net.Dialer {
 	if timeout <= 0 {
 		timeout = DefaultTimeout

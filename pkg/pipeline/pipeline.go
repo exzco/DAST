@@ -1,6 +1,8 @@
 package pipeline
 
 import (
+	"sync"
+
 	"distributed-scanner/internal/domain/poc"
 	"distributed-scanner/internal/domain/dedup"
 	"distributed-scanner/internal/domain/fingerprint"
@@ -81,9 +83,9 @@ func NewRunner(probe ProbeAdapter, check CheckExecutor, pocDir string) *Runner {
 		probeAdapter:  probe,
 		checkExecutor: check,
 		httpClient:    httpClient,
-		tlsAnalyzer:   fingerprint.NewTLSAnalyzer(5 * time.Second),
+		tlsAnalyzer:   fingerprint.NewTLSAnalyzer(800 * time.Millisecond),
 		ruleIndex:     idx,
-		fpEngine:      fingerprint.NewFingerprintEngine("data/fingerprints.json"),
+		fpEngine:      fingerprint.NewFingerprintEngine(),
 		nmapScanner:   fingerprint.NewNmapServiceScanner(),
 	}
 }
@@ -217,6 +219,9 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 		nmapServicesByHost[host] = r.nmapScanner.DetectServices(ctx, host, ports)
 	}
 
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
 	for _, obs := range openObs {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -225,172 +230,163 @@ func (r *Runner) Run(ctx context.Context, opts ScanOptions) (*ScanResult, error)
 			continue
 		}
 
-		_ = rateLimiter.Wait(ctx, obs.Host)
-		emit(3, "服务识别", fmt.Sprintf("[*] 正在分析协议与服务: %s:%d...", obs.Host, obs.Port))
+		wg.Add(1)
+		obs := obs
+		go func() {
+			defer wg.Done()
 
-		// 1. 优先使用 Nmap 针对 Bin 程序的探测结果
-		var svc model.Service
-		var tags []string
-		if nmapSvcMap, ok := nmapServicesByHost[obs.Host]; ok {
-			if nmapSvc, found := nmapSvcMap[obs.Port]; found && nmapSvc.Protocol != "" && nmapSvc.Protocol != "unknown" {
-				svc = nmapSvc
-				if svc.Product != "" {
-					tags = append(tags, svc.Product)
+			_ = rateLimiter.Wait(ctx, obs.Host)
+			emit(3, "服务识别", fmt.Sprintf("[*] 正在分析协议与服务: %s:%d...", obs.Host, obs.Port))
+
+			var svc model.Service
+			var tags []string
+			if nmapSvcMap, ok := nmapServicesByHost[obs.Host]; ok {
+				if nmapSvc, found := nmapSvcMap[obs.Port]; found && nmapSvc.Protocol != "" && nmapSvc.Protocol != "unknown" {
+					svc = nmapSvc
+					if svc.Product != "" {
+						tags = append(tags, svc.Product)
+					}
+					if svc.Protocol != "" {
+						tags = append(tags, svc.Protocol)
+					}
 				}
-				if svc.Protocol != "" {
-					tags = append(tags, svc.Protocol)
+			}
+
+			if svc.Protocol == "" || svc.Protocol == "unknown" {
+				proto, prod, fpTags, conf := r.fpEngine.IdentifyService(ctx, obs.Host, obs.Port, obs.Transport)
+				svc = model.Service{
+					ID:         model.NewUUID(),
+					Host:       obs.Host,
+					Port:       obs.Port,
+					Transport:  obs.Transport,
+					Protocol:   proto,
+					Product:    prod,
+					Confidence: conf,
+					ObservedAt: time.Now().UTC(),
 				}
+				tags = fpTags
 			}
-		}
 
-		// 2. 若 Nmap 未探测到，则执行 Banner 探测
-		if svc.Protocol == "" || svc.Protocol == "unknown" {
-			proto, prod, fpTags, conf := r.fpEngine.IdentifyService(ctx, obs.Host, obs.Port, obs.Transport)
-			svc = model.Service{
-				ID:         model.NewUUID(),
-				Host:       obs.Host,
-				Port:       obs.Port,
-				Transport:  obs.Transport,
-				Protocol:   proto,
-				Product:    prod,
-				Confidence: conf,
-				ObservedAt: time.Now().UTC(),
-			}
-			tags = fpTags
-		}
-
-		// 3. TLS 握手检测
-		isLikelyHTTPS := obs.Port == 443 || obs.Port == 8443 || svc.Protocol == "https"
-		if isLikelyHTTPS || svc.Protocol == "unknown" || svc.Protocol == "" || svc.Protocol == "http" {
-			tlsInfo, err := r.tlsAnalyzer.Analyze(ctx, obs.Host, obs.Port)
-			if err == nil && tlsInfo != nil {
-				if svc.Protocol != "https" {
-					svc.Protocol = "https"
-				}
-				svc.TLS = tlsInfo
-				svc.Confidence = model.ConfidenceCertain
-				emit(3, "服务识别", fmt.Sprintf("[+] TLS 握手成功 %s:%d (版本: %s, 证书: %s)", obs.Host, obs.Port, tlsInfo.Version, tlsInfo.SubjectCN))
-			}
-		}
-
-		if svc.Protocol != "http" && svc.Protocol != "https" {
-			testURL := fmt.Sprintf("http://%s:%d/", svc.Host, svc.Port)
-			if resp, err := r.httpClient.Do(ctx, "GET", testURL, nil, ""); err == nil && resp != nil {
-				svc.Protocol = "http"
-				svc.Confidence = model.ConfidenceFirm
-			}
-		}
-
-		allServices = append(allServices, svc)
-
-		// 记录 Banner/Nmap 提取数据
-		for _, tag := range tags {
-			allFacts = append(allFacts, model.Fact{
-				ID:         model.NewUUID(),
-				ScanRunID:  scanRunID,
-				AssetKey:   obs.Host,
-				Subject:    tag,
-				Kind:       model.FactKindServiceInfo,
-				Value:      svc.Product,
-				Confidence: svc.Confidence,
-				Source:     "service_probe",
-				ObservedAt: time.Now().UTC(),
-			})
-		}
-		if svc.Product != "" {
-			allFacts = append(allFacts, model.Fact{
-				ID:         model.NewUUID(),
-				ScanRunID:  scanRunID,
-				AssetKey:   obs.Host,
-				Subject:    svc.Product,
-				Kind:       model.FactKindServiceInfo,
-				Value:      svc.Product,
-				Confidence: svc.Confidence,
-				Source:     "service_product",
-				ObservedAt: time.Now().UTC(),
-			})
-		}
-
-		// 4. Web 服务识别：Wappalyzer +  fingerprint.FingerprintEngine 自定义规则
-		if svc.Protocol == "http" || svc.Protocol == "https" {
-			baseURL := fmt.Sprintf("%s://%s:%d", svc.Protocol, svc.Host, svc.Port)
-			resp, err := r.httpClient.Do(ctx, "GET", baseURL, nil, "")
-			if err == nil && resp != nil {
-				allEndpoints = append(allEndpoints, model.Endpoint{
-					ID:           model.NewUUID(),
-					ServiceID:    svc.ID,
-					URL:          baseURL + "/",
-					Method:       "GET",
-					Path:         "/",
-					Source:       "seed",
-					CanonicalKey: model.BuildEndpointCanonicalKey("GET", baseURL+"/"),
-					ObservedAt:   time.Now().UTC(),
-				})
-
-				webTags, webProd := r.fpEngine.DetectWebTechnologies(resp.RawHeader, resp.Headers, resp.Body)
-				if webProd != "" {
-					svc.Product = webProd
+			isLikelyHTTPS := obs.Port == 443 || obs.Port == 8443 || svc.Protocol == "https"
+			if isLikelyHTTPS || svc.Protocol == "unknown" || svc.Protocol == "" || svc.Protocol == "http" {
+				tlsInfo, err := r.tlsAnalyzer.Analyze(ctx, obs.Host, obs.Port)
+				if err == nil && tlsInfo != nil {
+					if svc.Protocol != "https" {
+						svc.Protocol = "https"
+					}
+					svc.TLS = tlsInfo
 					svc.Confidence = model.ConfidenceCertain
+					emit(3, "服务识别", fmt.Sprintf("[+] TLS 识别成功 %s:%d (版本: %s, 证书: %s)", obs.Host, obs.Port, tlsInfo.Version, tlsInfo.SubjectCN))
 				}
-				for _, wt := range webTags {
-					allFacts = append(allFacts, model.Fact{
-						ID:         model.NewUUID(),
-						ScanRunID:  scanRunID,
-						AssetKey:   svc.Host,
-						Subject:    wt,
-						Kind:       model.FactKindServiceInfo,
-						Value:      webProd,
-						Confidence: model.ConfidenceCertain,
-						Source:     "wappalyzer_fingerprint",
-						ObservedAt: time.Now().UTC(),
-					})
-				}
+			}
 
-				if serverHdr, ok := resp.Headers["Server"]; ok && serverHdr != "" {
-					fallbackToken := strings.ToLower(strings.TrimSpace(strings.Split(serverHdr, "/")[0]))
-					fallbackToken = strings.Split(fallbackToken, " ")[0]
-					
-					allFacts = append(allFacts, model.Fact{
-						ID:         model.NewUUID(),
-						ScanRunID:  scanRunID,
-						AssetKey:   svc.Host,
-						Subject:    fallbackToken,
-						Kind:       model.FactKindHeaderToken,
-						Value:      serverHdr,
-						Confidence: model.ConfidenceTentative,
-						Source:     "header:Server",
-						ObservedAt: time.Now().UTC(),
-					})
+			if svc.Protocol != "http" && svc.Protocol != "https" {
+				testURL := fmt.Sprintf("http://%s:%d/", svc.Host, svc.Port)
+				probeCtx, probeCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+				resp, err := r.httpClient.Do(probeCtx, "GET", testURL, nil, "")
+				probeCancel()
+				if err == nil && resp != nil {
+					svc.Protocol = "http"
+					svc.Confidence = model.ConfidenceFirm
 				}
+			}
 
-				extractedLinks := fingerprint.ExtractLinks(baseURL, resp.Body)
-				for _, link := range extractedLinks {
-					allEndpoints = append(allEndpoints, model.Endpoint{
+			var localFacts []model.Fact
+			for _, tag := range tags {
+				localFacts = append(localFacts, model.Fact{
+					ID:         model.NewUUID(),
+					ScanRunID:  scanRunID,
+					AssetKey:   obs.Host,
+					Subject:    tag,
+					Kind:       model.FactKindServiceInfo,
+					Value:      svc.Product,
+					Confidence: svc.Confidence,
+					Source:     "service_product",
+					ObservedAt: time.Now().UTC(),
+				})
+			}
+
+			var localEndpoints []model.Endpoint
+			if svc.Protocol == "http" || svc.Protocol == "https" {
+				baseURL := fmt.Sprintf("%s://%s:%d", svc.Protocol, svc.Host, svc.Port)
+				webCtx, webCancel := context.WithTimeout(ctx, 3*time.Second)
+				resp, err := r.httpClient.Do(webCtx, "GET", baseURL, nil, "")
+				webCancel()
+				if err == nil && resp != nil {
+					localEndpoints = append(localEndpoints, model.Endpoint{
 						ID:           model.NewUUID(),
 						ServiceID:    svc.ID,
-						URL:          baseURL + link,
+						URL:          baseURL + "/",
 						Method:       "GET",
-						Path:         link,
-						Source:       "dynamic_extract",
-						CanonicalKey: model.BuildEndpointCanonicalKey("GET", baseURL+link),
+						Path:         "/",
+						Source:       "seed",
+						CanonicalKey: model.BuildEndpointCanonicalKey("GET", baseURL+"/"),
 						ObservedAt:   time.Now().UTC(),
 					})
-				}
-				if len(extractedLinks) > 0 {
-					emit(3, "服务识别", fmt.Sprintf("[+] 从 HTML/JS 中提取出 %d 个动态端点与 API 路由", len(extractedLinks)))
+
+					webTags, webProd, _ := r.fpEngine.DetectWebTechnologies(resp)
+					if webProd != "" {
+						svc.Product = webProd
+						svc.Confidence = model.ConfidenceCertain
+					}
+					for _, wt := range webTags {
+						localFacts = append(localFacts, model.Fact{
+							ID:         model.NewUUID(),
+							ScanRunID:  scanRunID,
+							AssetKey:   svc.Host,
+							Subject:    wt,
+							Kind:       model.FactKindServiceInfo,
+							Value:      webProd,
+							Confidence: model.ConfidenceCertain,
+							Source:     "fingers",
+							ObservedAt: time.Now().UTC(),
+						})
+					}
+
+					if serverHdr, ok := resp.Headers["Server"]; ok && serverHdr != "" {
+						fallbackToken := strings.ToLower(strings.TrimSpace(strings.Split(serverHdr, "/")[0]))
+						fallbackToken = strings.Split(fallbackToken, " ")[0]
+						
+						localFacts = append(localFacts, model.Fact{
+							ID:         model.NewUUID(),
+							ScanRunID:  scanRunID,
+							AssetKey:   svc.Host,
+							Subject:    fallbackToken,
+							Kind:       model.FactKindHeaderToken,
+							Value:      serverHdr,
+							Confidence: model.ConfidenceTentative,
+							Source:     "header:Server",
+							ObservedAt: time.Now().UTC(),
+						})
+					}
+					
+					extractedLinks := fingerprint.ExtractLinks(baseURL, resp.Body)
+					for _, link := range extractedLinks {
+						localEndpoints = append(localEndpoints, model.Endpoint{
+							ID:           model.NewUUID(),
+							ServiceID:    svc.ID,
+							URL:          baseURL + link,
+							Method:       "GET",
+							Path:         link,
+							Source:       "dynamic_extract",
+							CanonicalKey: model.BuildEndpointCanonicalKey("GET", baseURL+link),
+							ObservedAt:   time.Now().UTC(),
+						})
+					}
+					if len(extractedLinks) > 0 {
+						emit(3, "服务识别", fmt.Sprintf("[+] 从 HTML/JS 提取到 %d 个动态端点 API 路径", len(extractedLinks)))
+					}
 				}
 			}
-		}
-	}
 
-	emit(3, "服务识别", fmt.Sprintf("[+] 识别提取到 %d 项服务与技术栈", len(allFacts)), func(e *ProgressEvent) {
-		e.FactsCount = len(allFacts)
-	})
-	for _, f := range allFacts {
-		if f.Subject != "" {
-			emit(3, "服务识别", fmt.Sprintf("   [*] 资产事实: %s:%s (来源: %s)", f.Subject, f.Value, f.Source))
-		}
+			mu.Lock()
+			allServices = append(allServices, svc)
+			allFacts = append(allFacts, localFacts...)
+			allEndpoints = append(allEndpoints, localEndpoints...)
+			mu.Unlock()
+		}()
 	}
+	wg.Wait()
 	emit(3, "服务识别", fmt.Sprintf("[+] 阶段 3/5 完成: 已识别服务 %d 个, 发现 Web 端点 %d 个 (耗时: %s)", len(allServices), len(allEndpoints), time.Since(stage3Start)))
 
 	// 4. nuclei POC 验证

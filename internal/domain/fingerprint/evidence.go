@@ -6,7 +6,7 @@ import (
 
 type ServiceEvidenceResolver struct {}
 
-func NewServiceEvidenceResolver(client llm.LLMClient) *ServiceEvidenceResolver {
+func NewServiceEvidenceResolver(client llm.Inferencer) *ServiceEvidenceResolver {
     return &ServiceEvidenceResolver{}
 }
 

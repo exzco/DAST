@@ -5,25 +5,22 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/hex"
-	"encoding/json"
+	"distributed-scanner/internal/infra/network"
 	"fmt"
 	"io"
 	"net/http"
-	"distributed-scanner/internal/infra/network"
 	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/chainreactors/fingers"
+	rawfingers "github.com/chainreactors/fingers/fingers"
 
 	"distributed-scanner/internal/model"
 
 	nmap "github.com/Ullaakut/nmap/v3"
-	wappalyzer "github.com/projectdiscovery/wappalyzergo"
 )
 
 var (
@@ -36,6 +33,7 @@ type HTTPResponse struct {
 	Headers    map[string]string
 	RawHeader  http.Header
 	Body       string
+	RawBytes   []byte
 	DurationMs int64
 }
 
@@ -80,27 +78,36 @@ func (c *HTTPClient) Do(ctx context.Context, method, targetURL string, headers m
 	}
 	defer resp.Body.Close()
 
-	limitReader := io.LimitReader(resp.Body, 5*1024*1024) 
+	// Limit to 256KB to prevent Regex CPU denial of service in fingers engine
+	limitReader := io.LimitReader(resp.Body, 256*1024)
 	bodyBytes, err := io.ReadAll(limitReader)
 	if err != nil {
 		return nil, fmt.Errorf("read response body: %w", err)
 	}
 
 	respHeaders := make(map[string]string)
+	var rawResp bytes.Buffer
+	rawResp.WriteString(fmt.Sprintf("HTTP/1.1 %d %s\r\n", resp.StatusCode, http.StatusText(resp.StatusCode)))
 	for k, vals := range resp.Header {
 		respHeaders[k] = strings.Join(vals, "; ")
+		for _, v := range vals {
+			rawResp.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+		}
 	}
+	rawResp.WriteString("\r\n")
+	rawResp.Write(bodyBytes)
 
 	return &HTTPResponse{
 		StatusCode: resp.StatusCode,
 		Headers:    respHeaders,
 		RawHeader:  resp.Header,
 		Body:       string(bodyBytes),
+		RawBytes:   rawResp.Bytes(),
 		DurationMs: duration,
 	}, nil
 }
 
-// 提取 api 路径，从前端 js 
+// 提取 api 路径，从前端 js
 func ExtractLinks(baseURLStr string, body string) []string {
 	baseURL, err := url.Parse(baseURLStr)
 	if err != nil {
@@ -124,7 +131,7 @@ func ExtractLinks(baseURLStr string, body string) []string {
 		}
 	}
 
-	// 2. 提取 api 
+	// 2. 提取 api
 	apiMatches := apiPathRegex.FindAllStringSubmatch(body, -1)
 	for _, am := range apiMatches {
 		if len(am) > 1 {
@@ -155,14 +162,13 @@ func normalizeExtractedPath(baseURL *url.URL, raw string) string {
 	return "/" + raw
 }
 
-
 type TLSAnalyzer struct {
 	dialTimeout time.Duration
 }
 
 func NewTLSAnalyzer(timeout time.Duration) *TLSAnalyzer {
 	if timeout <= 0 {
-		timeout = 5 * time.Second
+		timeout = 800 * time.Millisecond
 	}
 	return &TLSAnalyzer{dialTimeout: timeout}
 }
@@ -184,6 +190,9 @@ func (a *TLSAnalyzer) Analyze(ctx context.Context, host string, port int) (*mode
 		return nil, fmt.Errorf("tcp dial failed: %w", err)
 	}
 	defer rawConn.Close()
+
+	// Enforce a strict deadline for the TLS handshake so it doesn't block forever
+	rawConn.SetDeadline(time.Now().Add(a.dialTimeout))
 
 	tlsConn := tls.Client(rawConn, conf)
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
@@ -252,7 +261,7 @@ func (s *NmapServiceScanner) DetectServices(ctx context.Context, host string, po
 	}
 	portRange := strings.Join(portStrs, ",")
 
-	nmapCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	nmapCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
 	scanner, err := nmap.NewScanner(
@@ -295,162 +304,149 @@ func (s *NmapServiceScanner) DetectServices(ctx context.Context, host string, po
 	return result
 }
 
-
-// Wappalyzer + Custom Banner Engine
-type BannerRule struct {
-	Tags      []string `json:"tags"`
-	Prefix    string   `json:"prefix,omitempty"`
-	HexPrefix string   `json:"hex_prefix,omitempty"`
-}
-
-type FingerprintRuleSet struct {
-	BannerRules   []BannerRule            `json:"banner_rules"`
-}
-
+// // Fingers Engine Integration
 type FingerprintEngine struct {
-	mu         sync.RWMutex
-	rules      FingerprintRuleSet
-	wappalyzer *wappalyzer.Wappalyze
+	engine *fingers.Engine
 }
 
-func NewFingerprintEngine(rulesPath string) *FingerprintEngine {
-	engine := &FingerprintEngine{}
-
-	if rulesPath == "" {
-		rulesPath = "data/fingerprints.json"
+func NewFingerprintEngine() *FingerprintEngine {
+	engine, err := fingers.NewEngine()
+	if err != nil {
+		fmt.Printf("[-] Failed to initialize fingers engine: %v\n", err)
 	}
-
-	customWappalyzerPath := filepath.Join(filepath.Dir(rulesPath), "custom_wappalyzer.json")
-	if _, err := os.Stat(customWappalyzerPath); err == nil {
-		// 使用 Wappalyzer，并注入可扩展的 JSON 集
-		if wapp, err := wappalyzer.NewFromFile(customWappalyzerPath, true, true); err == nil {
-			engine.wappalyzer = wapp
-		}
-	} else {
-		if wapp, err := wappalyzer.New(); err == nil {
-			engine.wappalyzer = wapp
-		}
+	return &FingerprintEngine{
+		engine: engine,
 	}
-
-	if data, err := os.ReadFile(rulesPath); err == nil {
-		var loaded FingerprintRuleSet
-		if json.Unmarshal(data, &loaded) == nil && len(loaded.BannerRules) > 0 {
-			engine.rules = loaded
-		}
-	}
-	return engine
 }
 
-// 探测函数
-func (fe *FingerprintEngine) DetectWebTechnologies(rawHeader http.Header, headers map[string]string, body string) (tags []string, product string) {
+// DetectWebTechnologies identifies web components using fingers.
+func (fe *FingerprintEngine) DetectWebTechnologies(resp *HTTPResponse) (tags []string, product string, vulns []string) {
+	if fe.engine == nil || resp == nil || len(resp.RawBytes) == 0 {
+		return
+	}
+
+	// Slice to max 128KB for regex scanning to prevent CPU freeze
+	scanBytes := resp.RawBytes
+	if len(scanBytes) > 128*1024 {
+		scanBytes = scanBytes[:128*1024]
+	}
+
+	frames := fe.engine.WebMatchWithEngines(scanBytes, "fingers", "wappalyzer", "fingerprinthub", "ehole", "goby")
+
 	tagSet := make(map[string]bool)
-
-	// Wappalyzer 探测
-	if fe.wappalyzer != nil && rawHeader != nil {
-		wappTechs := fe.wappalyzer.Fingerprint(rawHeader, []byte(body))
-		for tech := range wappTechs {
-			lowerTech := strings.ToLower(tech)
-			tagSet[lowerTech] = true
-			if product == "" {
-				product = lowerTech
-			}
+	for _, frame := range frames {
+		tagSet[frame.Name] = true
+		for _, tag := range frame.Tags {
+			tagSet[tag] = true
+		}
+		if product == "" {
+			product = frame.Name
 		}
 	}
 
 	for t := range tagSet {
 		tags = append(tags, t)
 	}
-	return tags, product
+	return tags, product, vulns
 }
 
-func (fe *FingerprintEngine) MatchBanner(banner []byte) (matchedTags []string, product string) {
-	fe.mu.RLock()
-	defer fe.mu.RUnlock()
-
-	tagSet := make(map[string]bool)
-	bannerStr := string(banner)
-
-	for _, rule := range fe.rules.BannerRules {
-		matched := false
-
-		if rule.Prefix != "" && strings.HasPrefix(bannerStr, rule.Prefix) {
-			matched = true
-		}
-
-		if !matched && rule.HexPrefix != "" {
-			if expectedBytes, err := hex.DecodeString(rule.HexPrefix); err == nil {
-				if bytes.HasPrefix(banner, expectedBytes) {
-					matched = true
-				}
-			}
-		}
-
-		if matched {
-			for _, t := range rule.Tags {
-				tagSet[t] = true
-				if product == "" {
-					product = t
-				}
-			}
-		}
-	}
-
-	for t := range tagSet {
-		matchedTags = append(matchedTags, t)
-	}
-	return matchedTags, product
-}
-
-func (fe *FingerprintEngine) GrabBanner(ctx context.Context, host string, port int, timeout time.Duration) ([]byte, error) {
+// GrabBanner performs a single low-overhead banner grab (passive read, fallback to HTTP probe)
+func (fe *FingerprintEngine) GrabBanner(ctx context.Context, host string, port int, timeout time.Duration) []byte {
 	if timeout <= 0 {
-		timeout = 500 * time.Millisecond
+		timeout = 300 * time.Millisecond
 	}
 	addr := fmt.Sprintf("%s:%d", host, port)
 	dialer := network.NewDialer(timeout)
 
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return nil, err
+		return nil
 	}
 	defer conn.Close()
 
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 
-	buf := make([]byte, 1024)
+	buf := make([]byte, 2048)
 	n, err := conn.Read(buf)
 	if err == nil && n > 0 {
-		return buf[:n], nil
+		return buf[:n]
 	}
 
-	probePayload := []byte("GET / HTTP/1.0\r\nHost: " + host + "\r\n\r\n")
+	// 行业标准：通过外部化规则表或注册表进行协议回放 (Data-Driven Probing)
+	// 此处模拟 Nmap/Nuclei 的探针外部化设计，将探针与网络执行逻辑解耦
+	probePayload := getActiveProbePayload(port)
+	if len(probePayload) == 0 {
+		probePayload = []byte("GET / HTTP/1.0\r\nHost: " + host + "\r\n\r\n")
+	}
+
 	_, _ = conn.Write(probePayload)
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 	n, err = conn.Read(buf)
 	if err == nil && n > 0 {
-		return buf[:n], nil
+		return buf[:n]
 	}
 
-	return nil, err
+	return nil
 }
 
+// 模拟外部探针配置表 (在完整框架中应由 YAML/JSON 加载，如 Nuclei Templates 或 nmap-service-probes)
+var activeProbeRegistry = map[int][]byte{
+	135: {
+		0x05, 0x00, 0x0b, 0x03, 0x10, 0x00, 0x00, 0x00, 0x48, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+		0xb8, 0x10, 0xb8, 0x10, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+		0x40, 0xb8, 0x10, 0xe1, 0x9e, 0xbe, 0x11, 0xbf, 0xbf, 0x0e, 0x00, 0x00, 0x5b, 0x56, 0x50, 0x55,
+		0x00, 0x00, 0x00, 0x00, 0x04, 0x5d, 0x88, 0x8a, 0xeb, 0x1c, 0xc9, 0x11, 0x9f, 0xe8, 0x08, 0x00,
+		0x2b, 0x10, 0x48, 0x60, 0x02, 0x00, 0x00, 0x00,
+	},
+	445: []byte("\x00\x00\x00\x45\xff\x53\x4d\x42\x72\x00\x00\x00\x00\x18\x01\x28\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x22\x00\x02\x4e\x54\x20\x4c\x4d\x20\x30\x2e\x31\x32\x00\x02\x53\x4d\x42\x20\x32\x2e\x30\x30\x32\x00\x02\x53\x4d\x42\x20\x32\x2e\x3f\x3f\x3f\x00"),
+}
+
+func getActiveProbePayload(port int) []byte {
+	return activeProbeRegistry[port]
+}
+
+// IdentifyService captures banner in <300ms and executes zero-latency in-memory socket matching via fingers
 func (fe *FingerprintEngine) IdentifyService(ctx context.Context, host string, port int, transport string) (protocol, product string, tags []string, confidence model.Confidence) {
 	if transport == "tcp" {
-		banner, err := fe.GrabBanner(ctx, host, port, 400*time.Millisecond)
-		if err == nil && len(banner) > 0 {
+		banner := fe.GrabBanner(ctx, host, port, 300*time.Millisecond)
+		if len(banner) > 0 {
 			if bytes.HasPrefix(banner, []byte("HTTP/")) {
 				return "http", "", []string{"http"}, model.ConfidenceFirm
 			}
-			matchedTags, prod := fe.MatchBanner(banner)
-			if len(matchedTags) > 0 {
-				proto := matchedTags[0]
-				return proto, prod, matchedTags, model.ConfidenceCertain
+
+			// Binary protocol exact signatures
+			if len(banner) >= 8 && (bytes.Contains(banner[:8], []byte("SMB")) || bytes.Contains(banner[:8], []byte("\xffSMB")) || bytes.Contains(banner[:8], []byte("\xfeSMB"))) {
+				return "microsoft-ds", "Microsoft Windows SMB", []string{"smb", "microsoft-ds"}, model.ConfidenceCertain
 			}
+			if len(banner) >= 3 && banner[0] == 0x05 && banner[1] == 0x00 && banner[2] == 0x0c {
+				return "msrpc", "Microsoft Windows RPC", []string{"msrpc", "rpc"}, model.ConfidenceCertain
+			}
+
+			// In-memory socket matching via fingers engine without network overhead
+			if fe.engine != nil {
+				if feEngine, ok := fe.engine.GetEngine("fingers").(*rawfingers.FingersEngine); ok && feEngine != nil {
+					portStr := strconv.Itoa(port)
+					frame, _ := feEngine.SocketMatch(banner, portStr, 0, nil, nil)
+					if frame != nil {
+						proto := frame.Name
+						return proto, proto, []string{proto}, model.ConfidenceCertain
+					}
+				}
+			}
+		}
+
+		// Fallback for known quiet Windows internal service ports
+		switch port {
+		case 135:
+			return "msrpc", "Microsoft Windows RPC", []string{"msrpc"}, model.ConfidenceTentative
+		case 445:
+			return "microsoft-ds", "Microsoft Windows SMB", []string{"smb", "microsoft-ds"}, model.ConfidenceTentative
+		case 5040:
+			return "cdp-usersvc", "Connected Devices Platform User Service", []string{"windows-cdp"}, model.ConfidenceTentative
+		case 7680:
+			return "p2p-wudo", "Windows Update Delivery Optimization", []string{"wudo"}, model.ConfidenceTentative
 		}
 	}
 
 	return "unknown", "", nil, model.ConfidenceTentative
 }
-
-
-
-

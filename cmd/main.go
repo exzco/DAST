@@ -25,11 +25,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const banner = `
-========================================================================
-          Modular Monolith Blackbox DAST Scanner v1.0.0
-========================================================================
-`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -60,7 +55,6 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Print(banner)
 	fmt.Println("[*] 用法: dast <command> [options]")
 	fmt.Println("\n可用子命令:")
 	fmt.Println("  scan         单机 5 阶段流水线: 目标解析->端口探活->服务探测->POC验证->报告")
@@ -98,7 +92,7 @@ func runScan(args []string) {
 	profileFlag := fs.String("profile", "fast", "扫描预设 fast, balanced, deep")
 	outFlag := fs.String("output", "result/scan_report.json", "JSON 审计结果保存路径")
 	mdFlag := fs.String("md", "result/report.md", "Markdown 报告保存路径")
-	pocDirFlag := fs.String("poc-dir", "./poc", "Nuclei POC 模板目录路径")
+	pocDirFlag := fs.String("poc-dir", "./poc", "Neutron POC 模板目录路径")
 	_ = fs.Parse(args)
 
 	if *targetFlag == "" {
@@ -112,7 +106,6 @@ func runScan(args []string) {
 		rawTargets[i] = strings.TrimSpace(rawTargets[i])
 	}
 
-	fmt.Print(banner)
 	fmt.Printf("[*] 扫描启动: 目标数量=%d | Profile=%s | 端口配置=%s\n", len(rawTargets), *profileFlag, *portsFlag)
 	fmt.Println("------------------------------------------------------------------------")
 
@@ -134,8 +127,8 @@ func runScan(args []string) {
 	}
 
 	scanner := portscan.NewHybridPortScanner()
-	nucleiExecutor := poc.NewNucleiCheckExecutor(cfg.Scan.PocDir)
-	runner := pipeline.NewRunner(scanner, nucleiExecutor, cfg.Scan.PocDir)
+	neutronExecutor := poc.NewNeutronCheckExecutor(cfg.Scan.PocDir)
+	runner := pipeline.NewRunner(scanner, neutronExecutor, cfg.Scan.PocDir)
 
 	scanOpts := pipeline.ScanOptions{
 		Targets:      rawTargets,
@@ -181,8 +174,8 @@ func runAPI(args []string) {
 
 	cfg := config.Load()
 	scanner := portscan.NewHybridPortScanner()
-	nucleiExecutor := poc.NewNucleiCheckExecutor(cfg.Scan.PocDir)
-	runner := pipeline.NewRunner(scanner, nucleiExecutor, cfg.Scan.PocDir)
+	neutronExecutor := poc.NewNeutronCheckExecutor(cfg.Scan.PocDir)
+	runner := pipeline.NewRunner(scanner, neutronExecutor, cfg.Scan.PocDir)
 
 	server := api.NewServer(runner)
 	addr := fmt.Sprintf(":%d", *portFlag)
@@ -262,8 +255,8 @@ func runWorker(args []string) {
 	})
 
 	scanner := portscan.NewHybridPortScanner()
-	nucleiExecutor := poc.NewNucleiCheckExecutor(cfg.Scan.PocDir)
-	runner := pipeline.NewRunner(scanner, nucleiExecutor, cfg.Scan.PocDir)
+	neutronExecutor := poc.NewNeutronCheckExecutor(cfg.Scan.PocDir)
+	runner := pipeline.NewRunner(scanner, neutronExecutor, cfg.Scan.PocDir)
 
 	worker := mq.NewWorkerRuntime(rdb, *rawStreamFlag, *targetStreamFlag, *groupFlag, runner)
 	fmt.Printf("[*] 分布式 Worker 守护进程启动:\n")
@@ -276,7 +269,7 @@ func runWorker(args []string) {
 
 func runUpdate(args []string) {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
-	pocFlag := fs.Bool("poc", false, "同步社区 Nuclei POC 漏洞检测模板库")
+	pocFlag := fs.Bool("poc", false, "同步 Neutron POC 漏洞模板")
 	dictFlag := fs.Bool("dict", false, "同步 SecLists 敏感目录字典库")
 	allFlag := fs.Bool("all", false, "同步字典库")
 	pocDirFlag := fs.String("dir", "./poc", "POC 保存目录")

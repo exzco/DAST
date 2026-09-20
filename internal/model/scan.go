@@ -57,6 +57,7 @@ type Prerequisite struct {
 
 type CheckSpec struct {
 	ID             string         `json:"id"`
+	FilePath       string         `json:"file_path"`
 	Name           string         `json:"name"`
 	CheckType      CheckType      `json:"check_type"`
 	Severity       Severity       `json:"severity"`

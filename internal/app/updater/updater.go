@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	NucleiTemplatesRepo = "https://github.com/projectdiscovery/nuclei-templates.git"
+	NeutronTemplatesRepo = "https://github.com/chainreactors/templates.git"
 	SecListsCommonURL   = "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/common.txt"
 )
 
@@ -31,7 +31,7 @@ func NewResourceUpdater() *ResourceUpdater {
 	}
 }
 
-// 更新 Nuclei poc
+// 更新 Neutron poc
 func (u *ResourceUpdater) UpdatePOCTemplates(ctx context.Context, pocDir string) error {
 	if pocDir == "" {
 		pocDir = "./poc"
@@ -53,8 +53,8 @@ func (u *ResourceUpdater) UpdatePOCTemplates(ctx context.Context, pocDir string)
 		}
 	} else {
 		_ = os.MkdirAll(filepath.Dir(absDir), 0755)
-		fmt.Printf("[*] 正在从社区拉取规则模板库 (git clone %s -> %s)...\n", NucleiTemplatesRepo, absDir)
-		cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", NucleiTemplatesRepo, absDir)
+		fmt.Printf("[*] 正在从社区拉取规则模板库 (git clone %s -> %s)...\n", NeutronTemplatesRepo, absDir)
+		cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", NeutronTemplatesRepo, absDir)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
@@ -70,7 +70,7 @@ func (u *ResourceUpdater) UpdatePOCTemplates(ctx context.Context, pocDir string)
 		fmt.Printf("[+] 成功索引 %d 个社区 POC 规则\n", len(specs))
 	}
 
-	fmt.Println("[+] Nuclei 社区规则模板库同步完成")
+	fmt.Println("[+] Neutron 社区规则模板库同步完成")
 	return nil
 }
 
@@ -125,6 +125,7 @@ func (u *ResourceUpdater) UpdateDictionaries(ctx context.Context, dictDir string
 	}
 	return err
 }
+
 
 
 
